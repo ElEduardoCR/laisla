@@ -18,10 +18,19 @@ export interface CartItem {
   quantity: number;
 }
 
+export interface OrderItem {
+  id: string;
+  orderId: string;
+  productId: string;
+  productName: string;
+  productPrice: number;
+  quantity: number;
+}
+
 export interface Order {
   id: string;
   customerName: string;
-  items: CartItem[];
+  items: OrderItem[];
   takeout: boolean;
   status: 'pending' | 'preparing' | 'ready' | 'completed';
   paymentMethod?: 'cash' | 'terminal';

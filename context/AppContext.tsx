@@ -1,37 +1,15 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Category, Product, CartItem, Order } from '@/types';
-
-const defaultCategories: Category[] = [
-  { id: 'cat-1', name: 'Ceviches', order: 1 },
-  { id: 'cat-2', name: 'Cocteles', order: 2 },
-  { id: 'cat-3', name: 'Tacos', order: 3 },
-  { id: 'cat-4', name: 'Tostadas', order: 4 },
-  { id: 'cat-5', name: 'Aguachiles', order: 5 },
-  { id: 'cat-6', name: 'Bebidas', order: 6 },
-];
-
-const defaultProducts: Product[] = [
-  { id: 'prod-1', categoryId: 'cat-1', name: 'Ceviche de Camarón', price: 120, available: true },
-  { id: 'prod-2', categoryId: 'cat-1', name: 'Ceviche de Pescado', price: 100, available: true },
-  { id: 'prod-3', categoryId: 'cat-1', name: 'Ceviche Mixto', price: 140, available: true },
-  { id: 'prod-4', categoryId: 'cat-2', name: 'Coctel de Camarón', price: 130, available: true },
-  { id: 'prod-5', categoryId: 'cat-2', name: 'Coctel de Pulpo', price: 150, available: true },
-  { id: 'prod-6', categoryId: 'cat-2', name: 'Coctel Mixto', price: 160, available: true },
-  { id: 'prod-7', categoryId: 'cat-3', name: 'Taco de Camarón', price: 35, available: true },
-  { id: 'prod-8', categoryId: 'cat-3', name: 'Taco de Pescado', price: 30, available: true },
-  { id: 'prod-9', categoryId: 'cat-3', name: 'Taco Gobernador', price: 45, available: true },
-  { id: 'prod-10', categoryId: 'cat-4', name: 'Tostada de Ceviche', price: 45, available: true },
-  { id: 'prod-11', categoryId: 'cat-4', name: 'Tostada de Marlín', price: 40, available: true },
-  { id: 'prod-12', categoryId: 'cat-5', name: 'Aguachile Verde', price: 140, available: true },
-  { id: 'prod-13', categoryId: 'cat-5', name: 'Aguachile Negro', price: 145, available: true },
-  { id: 'prod-14', categoryId: 'cat-5', name: 'Aguachile Rojo', price: 140, available: true },
-  { id: 'prod-15', categoryId: 'cat-6', name: 'Agua Fresca', price: 30, available: true },
-  { id: 'prod-16', categoryId: 'cat-6', name: 'Refresco', price: 25, available: true },
-  { id: 'prod-17', categoryId: 'cat-6', name: 'Cerveza', price: 40, available: true },
-  { id: 'prod-18', categoryId: 'cat-6', name: 'Michelada', price: 65, available: true },
-];
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { Category, Product, CartItem, Order, OrderItem } from '@/types';
+import { supabase } from '@/lib/supabase';
+import {
+  fetchCategories, fetchProducts, fetchOrders, fetchOrderItems,
+  insertCategory, updateCategoryDb, deleteCategoryDb,
+  insertProduct, updateProductDb, deleteProductDb,
+  insertOrder, updateOrderStatusDb, completeOrderDb,
+  seedIfEmpty, generateId,
+} from '@/lib/database';
 
 interface AppContextType {
   // Menu
@@ -44,7 +22,7 @@ interface AppContextType {
   updateProduct: (id: string, data: Partial<Product>) => void;
   deleteProduct: (id: string) => void;
 
-  // Cart
+  // Cart (local only)
   cart: CartItem[];
   customerName: string;
   setCustomerName: (name: string) => void;
@@ -59,27 +37,16 @@ interface AppContextType {
 
   // Orders
   orders: Order[];
-  placeOrder: () => boolean;
+  placeOrder: () => Promise<boolean>;
   updateOrderStatus: (orderId: string, status: Order['status']) => void;
   completeOrder: (orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => void;
   pendingOrdersCount: number;
+
+  // Loading
+  loaded: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
-
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-}
-
-function loadFromStorage<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const data = localStorage.getItem(key);
-    return data ? JSON.parse(data) : fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -90,58 +57,187 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [takeout, setTakeout] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  // Load from localStorage on mount
+  // Track IDs we created locally to avoid duplicates from Realtime
+  const localIds = useRef(new Set<string>());
+
+  // ── Initial data load ──
   useEffect(() => {
-    setCategories(loadFromStorage('pos-categories', defaultCategories));
-    setProducts(loadFromStorage('pos-products', defaultProducts));
-    setOrders(loadFromStorage('pos-orders', []));
-    setLoaded(true);
+    async function init() {
+      try {
+        await seedIfEmpty();
+        const [cats, prods, ords] = await Promise.all([
+          fetchCategories(),
+          fetchProducts(),
+          fetchOrders(),
+        ]);
+        setCategories(cats);
+        setProducts(prods);
+        setOrders(ords);
+      } catch (err) {
+        console.error('Failed to load data:', err);
+      } finally {
+        setLoaded(true);
+      }
+    }
+    init();
   }, []);
 
-  // Persist to localStorage
+  // ── Realtime subscriptions ──
   useEffect(() => {
-    if (!loaded) return;
-    localStorage.setItem('pos-categories', JSON.stringify(categories));
-  }, [categories, loaded]);
+    const channel = supabase
+      .channel('pos-realtime')
+      // Categories
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'categories' }, (payload) => {
+        const row = payload.new;
+        if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
+        setCategories(prev => {
+          if (prev.some(c => c.id === row.id)) return prev;
+          return [...prev, { id: row.id, name: row.name, order: Number(row.order) }];
+        });
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'categories' }, (payload) => {
+        const row = payload.new;
+        setCategories(prev => prev.map(c => c.id === row.id ? { ...c, name: row.name, order: Number(row.order) } : c));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'categories' }, (payload) => {
+        const old = payload.old;
+        setCategories(prev => prev.filter(c => c.id !== old.id));
+      })
+      // Products
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (payload) => {
+        const row = payload.new;
+        if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
+        setProducts(prev => {
+          if (prev.some(p => p.id === row.id)) return prev;
+          return [...prev, {
+            id: row.id, categoryId: row.category_id, name: row.name,
+            price: Number(row.price), description: row.description || undefined, available: row.available,
+          }];
+        });
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, (payload) => {
+        const row = payload.new;
+        setProducts(prev => prev.map(p => p.id === row.id ? {
+          ...p, name: row.name, price: Number(row.price), available: row.available,
+          description: row.description || undefined, categoryId: row.category_id,
+        } : p));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload) => {
+        const old = payload.old;
+        setProducts(prev => prev.filter(p => p.id !== old.id));
+      })
+      // Orders
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => {
+        const row = payload.new;
+        if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
+        // New order from another device — fetch its items
+        setOrders(prev => {
+          if (prev.some(o => o.id === row.id)) return prev;
+          return [...prev, {
+            id: row.id, customerName: row.customer_name, takeout: row.takeout,
+            status: row.status, createdAt: row.created_at, items: [],
+            paymentMethod: row.payment_method || undefined,
+            amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
+            change: row.change != null ? Number(row.change) : undefined,
+            completedAt: row.completed_at || undefined,
+          }];
+        });
+        // Then fetch items async
+        fetchOrderItems(row.id).then(items => {
+          setOrders(prev => prev.map(o => o.id === row.id ? { ...o, items } : o));
+        });
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+        const row = payload.new;
+        setOrders(prev => prev.map(o => o.id === row.id ? {
+          ...o,
+          status: row.status,
+          paymentMethod: row.payment_method || undefined,
+          amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
+          change: row.change != null ? Number(row.change) : undefined,
+          completedAt: row.completed_at || undefined,
+        } : o));
+      })
+      // Order items (for items arriving from other devices)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'order_items' }, (payload) => {
+        const row = payload.new;
+        if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
+        const item: OrderItem = {
+          id: row.id, orderId: row.order_id, productId: row.product_id,
+          productName: row.product_name, productPrice: Number(row.product_price),
+          quantity: Number(row.quantity),
+        };
+        setOrders(prev => prev.map(o => {
+          if (o.id !== item.orderId) return o;
+          if (o.items.some(i => i.id === item.id)) return o;
+          return { ...o, items: [...o.items, item] };
+        }));
+      })
+      .subscribe();
 
-  useEffect(() => {
-    if (!loaded) return;
-    localStorage.setItem('pos-products', JSON.stringify(products));
-  }, [products, loaded]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
-  useEffect(() => {
-    if (!loaded) return;
-    localStorage.setItem('pos-orders', JSON.stringify(orders));
-  }, [orders, loaded]);
+  // ══════════════════════════════════════════════
+  // CATEGORIES CRUD
+  // ══════════════════════════════════════════════
 
-  // Categories CRUD
   const addCategory = useCallback((name: string) => {
-    setCategories(prev => [...prev, { id: generateId(), name, order: prev.length + 1 }]);
-  }, []);
+    const tempId = generateId();
+    localIds.current.add(tempId);
+    // Optimistic
+    setCategories(prev => [...prev, { id: tempId, name, order: prev.length + 1 }]);
+    // DB
+    insertCategory(name, categories.length + 1).then(cat => {
+      if (cat.id !== tempId) {
+        // Replace temp ID with real one (shouldn't happen since we use same generateId)
+        setCategories(prev => prev.map(c => c.id === tempId ? { ...c, id: cat.id } : c));
+      }
+    }).catch(err => console.error('addCategory error:', err));
+  }, [categories.length]);
 
-  const updateCategory = useCallback((id: string, name: string) => {
+  const updateCategoryFn = useCallback((id: string, name: string) => {
     setCategories(prev => prev.map(c => c.id === id ? { ...c, name } : c));
+    updateCategoryDb(id, name).catch(err => console.error('updateCategory error:', err));
   }, []);
 
-  const deleteCategory = useCallback((id: string) => {
+  const deleteCategoryFn = useCallback((id: string) => {
     setCategories(prev => prev.filter(c => c.id !== id));
     setProducts(prev => prev.filter(p => p.categoryId !== id));
+    deleteCategoryDb(id).catch(err => console.error('deleteCategory error:', err));
   }, []);
 
-  // Products CRUD
-  const addProduct = useCallback((product: Omit<Product, 'id'>) => {
-    setProducts(prev => [...prev, { ...product, id: generateId() }]);
+  // ══════════════════════════════════════════════
+  // PRODUCTS CRUD
+  // ══════════════════════════════════════════════
+
+  const addProductFn = useCallback((product: Omit<Product, 'id'>) => {
+    const tempId = generateId();
+    localIds.current.add(tempId);
+    setProducts(prev => [...prev, { ...product, id: tempId }]);
+    insertProduct(product).then(p => {
+      if (p.id !== tempId) {
+        setProducts(prev => prev.map(pr => pr.id === tempId ? { ...pr, id: p.id } : pr));
+      }
+    }).catch(err => console.error('addProduct error:', err));
   }, []);
 
-  const updateProduct = useCallback((id: string, data: Partial<Product>) => {
+  const updateProductFn = useCallback((id: string, data: Partial<Product>) => {
     setProducts(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
+    updateProductDb(id, data).catch(err => console.error('updateProduct error:', err));
   }, []);
 
-  const deleteProduct = useCallback((id: string) => {
+  const deleteProductFn = useCallback((id: string) => {
     setProducts(prev => prev.filter(p => p.id !== id));
+    deleteProductDb(id).catch(err => console.error('deleteProduct error:', err));
   }, []);
 
-  // Cart
+  // ══════════════════════════════════════════════
+  // CART (local only — no DB)
+  // ══════════════════════════════════════════════
+
   const addToCart = useCallback((product: Product) => {
     setCart(prev => {
       const existing = prev.find(item => item.product.id === product.id);
@@ -179,34 +275,71 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const cartTotal = cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  // Orders
-  const placeOrder = useCallback(() => {
+  // ══════════════════════════════════════════════
+  // ORDERS
+  // ══════════════════════════════════════════════
+
+  const placeOrder = useCallback(async () => {
     if (!customerName.trim() || cart.length === 0) return false;
+
+    const orderId = generateId();
+    const now = new Date().toISOString();
+
+    // Build order items from cart (snapshot product data)
+    const orderItems: OrderItem[] = cart.map((item, i) => ({
+      id: generateId() + i,
+      orderId,
+      productId: item.product.id,
+      productName: item.product.name,
+      productPrice: item.product.price,
+      quantity: item.quantity,
+    }));
+
     const newOrder: Order = {
-      id: generateId(),
+      id: orderId,
       customerName: customerName.trim(),
-      items: [...cart],
+      items: orderItems,
       takeout,
       status: 'pending',
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
+
+    // Mark as locally created to avoid Realtime duplicates
+    localIds.current.add(orderId);
+    orderItems.forEach(item => localIds.current.add(item.id));
+
+    // Optimistic update
     setOrders(prev => [...prev, newOrder]);
     setCart([]);
     setCustomerName('');
     setTakeout(false);
+
+    // DB insert
+    try {
+      await insertOrder(
+        { id: orderId, customerName: newOrder.customerName, takeout, status: 'pending', createdAt: now },
+        orderItems
+      );
+    } catch (err) {
+      console.error('placeOrder error:', err);
+    }
+
     return true;
   }, [customerName, cart, takeout]);
 
-  const updateOrderStatus = useCallback((orderId: string, status: Order['status']) => {
+  const updateOrderStatusFn = useCallback((orderId: string, status: Order['status']) => {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
+    updateOrderStatusDb(orderId, status).catch(err => console.error('updateOrderStatus error:', err));
   }, []);
 
-  const completeOrder = useCallback((orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => {
+  const completeOrderFn = useCallback((orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => {
     setOrders(prev => prev.map(o =>
       o.id === orderId
         ? { ...o, status: 'completed' as const, paymentMethod, amountPaid, change, completedAt: new Date().toISOString() }
         : o
     ));
+    completeOrderDb(orderId, paymentMethod, amountPaid, change)
+      .catch(err => console.error('completeOrder error:', err));
   }, []);
 
   const pendingOrdersCount = orders.filter(o => o.status === 'pending' || o.status === 'preparing').length;
@@ -215,12 +348,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     <AppContext.Provider
       value={{
         categories, products,
-        addCategory, updateCategory, deleteCategory,
-        addProduct, updateProduct, deleteProduct,
+        addCategory, updateCategory: updateCategoryFn, deleteCategory: deleteCategoryFn,
+        addProduct: addProductFn, updateProduct: updateProductFn, deleteProduct: deleteProductFn,
         cart, customerName, setCustomerName, takeout, setTakeout,
         addToCart, removeFromCart, updateCartQuantity, clearCart,
         cartTotal, cartCount,
-        orders, placeOrder, updateOrderStatus, completeOrder, pendingOrdersCount,
+        orders, placeOrder, updateOrderStatus: updateOrderStatusFn,
+        completeOrder: completeOrderFn, pendingOrdersCount,
+        loaded,
       }}
     >
       {children}

@@ -17,13 +17,13 @@ export default function CartDrawer({ open, onClose }: Props) {
   const [nameError, setNameError] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const handlePlaceOrder = () => {
+  const handlePlaceOrder = async () => {
     if (!customerName.trim()) {
       setNameError(true);
       return;
     }
     setNameError(false);
-    const ok = placeOrder();
+    const ok = await placeOrder();
     if (ok) {
       setSuccess(true);
       setTimeout(() => {

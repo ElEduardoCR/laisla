@@ -10,7 +10,7 @@ function formatTime(iso: string) {
 }
 
 function getOrderTotal(order: Order) {
-  return order.items.reduce((s, i) => s + i.product.price * i.quantity, 0);
+  return order.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
 }
 
 // ── Denomination buttons for cash payment ──
@@ -75,9 +75,9 @@ function PaymentModal({
               {order.items.map((item, i) => (
                 <div key={i} className="flex justify-between text-sm">
                   <span className="text-gray-700">
-                    <span className="font-semibold">{item.quantity}x</span> {item.product.name}
+                    <span className="font-semibold">{item.quantity}x</span> {item.productName}
                   </span>
-                  <span className="font-medium text-gray-500">${(item.product.price * item.quantity).toFixed(2)}</span>
+                  <span className="font-medium text-gray-500">${(item.productPrice * item.quantity).toFixed(2)}</span>
                 </div>
               ))}
             </div>
@@ -233,10 +233,10 @@ function OrderCard({
           <div key={i} className="flex justify-between text-sm">
             <span className="text-gray-700">
               <span className="font-semibold text-foreground">{item.quantity}x</span>{' '}
-              {item.product.name}
+              {item.productName}
             </span>
             <span className="text-gray-500 font-medium">
-              ${(item.product.price * item.quantity).toFixed(2)}
+              ${(item.productPrice * item.quantity).toFixed(2)}
             </span>
           </div>
         ))}
