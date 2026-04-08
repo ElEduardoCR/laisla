@@ -29,8 +29,9 @@ interface AppContextType {
   takeout: boolean;
   setTakeout: (val: boolean) => void;
   addToCart: (product: Product) => void;
-  removeFromCart: (productId: string) => void;
-  updateCartQuantity: (productId: string, quantity: number) => void;
+  removeFromCart: (cartItemId: string) => void;
+  updateCartQuantity: (cartItemId: string, quantity: number) => void;
+  updateCartItemNotes: (cartItemId: string, notes: string) => void;
   clearCart: () => void;
   cartTotal: number;
   cartCount: number;
@@ -165,7 +166,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const item: OrderItem = {
           id: row.id, orderId: row.order_id, productId: row.product_id,
           productName: row.product_name, productPrice: Number(row.product_price),
-          quantity: Number(row.quantity),
+          quantity: Number(row.quantity), notes: row.notes || undefined,
         };
         setOrders(prev => prev.map(o => {
           if (o.id !== item.orderId) return o;
@@ -240,29 +241,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addToCart = useCallback((product: Product) => {
     setCart(prev => {
-      const existing = prev.find(item => item.product.id === product.id);
+      const existing = prev.find(item => item.product.id === product.id && !item.notes);
       if (existing) {
         return prev.map(item =>
-          item.product.id === product.id
+          item.id === existing.id
             ? { ...item, quantity: item.quantity + 1 }
             : item
         );
       }
-      return [...prev, { product, quantity: 1 }];
+      return [...prev, { id: generateId(), product, quantity: 1, notes: '' }];
     });
   }, []);
 
-  const removeFromCart = useCallback((productId: string) => {
-    setCart(prev => prev.filter(item => item.product.id !== productId));
+  const removeFromCart = useCallback((cartItemId: string) => {
+    setCart(prev => prev.filter(item => item.id !== cartItemId));
   }, []);
 
-  const updateCartQuantity = useCallback((productId: string, quantity: number) => {
+  const updateCartQuantity = useCallback((cartItemId: string, quantity: number) => {
     if (quantity <= 0) {
-      setCart(prev => prev.filter(item => item.product.id !== productId));
+      setCart(prev => prev.filter(item => item.id !== cartItemId));
       return;
     }
     setCart(prev => prev.map(item =>
-      item.product.id === productId ? { ...item, quantity } : item
+      item.id === cartItemId ? { ...item, quantity } : item
+    ));
+  }, []);
+
+  const updateCartItemNotes = useCallback((cartItemId: string, notes: string) => {
+    setCart(prev => prev.map(item =>
+      item.id === cartItemId ? { ...item, notes } : item
     ));
   }, []);
 
@@ -293,6 +300,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       productName: item.product.name,
       productPrice: item.product.price,
       quantity: item.quantity,
+      notes: item.notes || undefined,
     }));
 
     const newOrder: Order = {
@@ -351,7 +359,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         addCategory, updateCategory: updateCategoryFn, deleteCategory: deleteCategoryFn,
         addProduct: addProductFn, updateProduct: updateProductFn, deleteProduct: deleteProductFn,
         cart, customerName, setCustomerName, takeout, setTakeout,
-        addToCart, removeFromCart, updateCartQuantity, clearCart,
+        addToCart, removeFromCart, updateCartQuantity, updateCartItemNotes, clearCart,
         cartTotal, cartCount,
         orders, placeOrder, updateOrderStatus: updateOrderStatusFn,
         completeOrder: completeOrderFn, pendingOrdersCount,

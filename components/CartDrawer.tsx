@@ -11,7 +11,7 @@ interface Props {
 export default function CartDrawer({ open, onClose }: Props) {
   const {
     cart, cartTotal, customerName, setCustomerName,
-    takeout, setTakeout, updateCartQuantity, removeFromCart,
+    takeout, setTakeout, updateCartQuantity, updateCartItemNotes, removeFromCart,
     clearCart, placeOrder,
   } = useApp();
   const [nameError, setNameError] = useState(false);
@@ -130,38 +130,48 @@ export default function CartDrawer({ open, onClose }: Props) {
               <div className="space-y-3">
                 {cart.map(item => (
                   <div
-                    key={item.product.id}
-                    className="bg-gray-50 rounded-lg p-3 flex items-center gap-3"
+                    key={item.id}
+                    className="bg-gray-50 rounded-lg p-3 flex flex-col gap-2"
                   >
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm text-foreground truncate">
-                        {item.product.name}
-                      </p>
-                      <p className="text-primary font-bold text-sm">
-                        ${(item.product.price * item.quantity).toFixed(2)}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-sm text-foreground truncate">
+                          {item.product.name}
+                        </p>
+                        <p className="text-primary font-bold text-sm">
+                          ${(item.product.price * item.quantity).toFixed(2)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => updateCartQuantity(item.id, item.quantity - 1)}
+                          className="w-7 h-7 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center text-sm font-bold transition-colors"
+                        >
+                          −
+                        </button>
+                        <span className="w-8 text-center font-bold text-sm">{item.quantity}</span>
+                        <button
+                          onClick={() => updateCartQuantity(item.id, item.quantity + 1)}
+                          className="w-7 h-7 rounded-full bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center text-sm font-bold transition-colors"
+                        >
+                          +
+                        </button>
+                      </div>
                       <button
-                        onClick={() => updateCartQuantity(item.product.id, item.quantity - 1)}
-                        className="w-7 h-7 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center text-sm font-bold transition-colors"
+                        onClick={() => removeFromCart(item.id)}
+                        className="text-red-400 hover:text-red-600 text-lg transition-colors shrink-0"
                       >
-                        −
-                      </button>
-                      <span className="w-8 text-center font-bold text-sm">{item.quantity}</span>
-                      <button
-                        onClick={() => updateCartQuantity(item.product.id, item.quantity + 1)}
-                        className="w-7 h-7 rounded-full bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center text-sm font-bold transition-colors"
-                      >
-                        +
+                        🗑️
                       </button>
                     </div>
-                    <button
-                      onClick={() => removeFromCart(item.product.id)}
-                      className="text-red-400 hover:text-red-600 text-lg transition-colors shrink-0"
-                    >
-                      🗑️
-                    </button>
+                    {/* Notes field */}
+                    <input
+                      type="text"
+                      placeholder="Agrega nota (ej: sin cebolla)..."
+                      value={item.notes || ''}
+                      onChange={e => updateCartItemNotes(item.id, e.target.value)}
+                      className="w-full text-xs px-2 py-1.5 border rounded bg-white text-gray-700 focus:outline-none focus:border-primary placeholder:text-gray-400"
+                    />
                   </div>
                 ))}
               </div>

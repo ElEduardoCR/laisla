@@ -191,6 +191,8 @@ function OrderCard({
   onCharge?: (order: Order) => void;
   variant?: 'active' | 'ready' | 'completed';
 }) {
+  const { products, categories } = useApp();
+  
   const statusStyles = {
     pending: 'border-accent bg-accent/5',
     preparing: 'border-primary bg-primary/5',
@@ -206,6 +208,17 @@ function OrderCard({
   };
 
   const total = getOrderTotal(order);
+
+  // Group items by category
+  const groupedItems = order.items.reduce((acc, item) => {
+    const product = products.find(p => p.id === item.productId);
+    const category = categories.find(c => c.id === product?.categoryId);
+    const catName = category?.name || 'Otros';
+    
+    if (!acc[catName]) acc[catName] = [];
+    acc[catName].push(item);
+    return acc;
+  }, {} as Record<string, typeof order.items>);
 
   return (
     <div className={`rounded-xl border-2 p-4 shadow-sm ${statusStyles[order.status]}`}>
@@ -227,17 +240,33 @@ function OrderCard({
         </div>
       </div>
 
-      {/* Items */}
-      <div className="space-y-1.5 mb-4">
-        {order.items.map((item, i) => (
-          <div key={i} className="flex justify-between text-sm">
-            <span className="text-gray-700">
-              <span className="font-semibold text-foreground">{item.quantity}x</span>{' '}
-              {item.productName}
-            </span>
-            <span className="text-gray-500 font-medium">
-              ${(item.productPrice * item.quantity).toFixed(2)}
-            </span>
+      {/* Items Grouped */}
+      <div className="space-y-3 mb-4">
+        {Object.entries(groupedItems).map(([catName, items]) => (
+          <div key={catName} className="bg-white/50 rounded-lg p-2 border">
+            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-1.5 border-b border-gray-200 pb-1">
+              {catName}
+            </h4>
+            <div className="space-y-2">
+              {items.map((item, i) => (
+                <div key={i} className="flex justify-between text-sm">
+                  <div className="flex-1 pr-2">
+                    <span className="text-gray-700">
+                      <span className="font-semibold text-foreground">{item.quantity}x</span>{' '}
+                      {item.productName}
+                    </span>
+                    {item.notes && (
+                      <div className="text-xs text-red-500 font-bold mt-0.5 leading-tight">
+                        ⚠️ {item.notes}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-gray-500 font-medium whitespace-nowrap">
+                    ${(item.productPrice * item.quantity).toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>

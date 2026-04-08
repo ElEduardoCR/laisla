@@ -9,7 +9,9 @@ interface Props {
 
 export default function ProductCard({ product }: Props) {
   const { addToCart, cart } = useApp();
-  const cartItem = cart.find(item => item.product.id === product.id);
+  const quantity = cart
+    .filter(item => item.product.id === product.id)
+    .reduce((sum, item) => sum + item.quantity, 0);
 
   return (
     <button
@@ -21,9 +23,9 @@ export default function ProductCard({ product }: Props) {
           : 'border-transparent opacity-50 cursor-not-allowed'
       }`}
     >
-      {cartItem && (
+      {quantity > 0 && (
         <span className="absolute -top-2 -right-2 bg-accent text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shadow-md">
-          {cartItem.quantity}
+          {quantity}
         </span>
       )}
 

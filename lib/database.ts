@@ -55,6 +55,7 @@ function mapOrderItemRow(row: Record<string, unknown>): OrderItem {
     productName: row.product_name as string,
     productPrice: Number(row.product_price),
     quantity: Number(row.quantity),
+    notes: (row.notes as string) || undefined,
   };
 }
 
@@ -213,6 +214,7 @@ export async function insertOrder(
           product_name: item.productName,
           product_price: item.productPrice,
           quantity: item.quantity,
+          notes: item.notes || null,
         }))
       );
     if (iErr) throw iErr;

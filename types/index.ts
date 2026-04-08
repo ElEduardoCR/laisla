@@ -14,8 +14,10 @@ export interface Product {
 }
 
 export interface CartItem {
+  id: string;
   product: Product;
   quantity: number;
+  notes?: string;
 }
 
 export interface OrderItem {
@@ -25,6 +27,7 @@ export interface OrderItem {
   productName: string;
   productPrice: number;
   quantity: number;
+  notes?: string;
 }
 
 export interface Order {
