@@ -41,4 +41,26 @@ export interface Order {
   change?: number;
   createdAt: string;
   completedAt?: string;
+  daySessionId?: string;
+}
+
+export interface DaySession {
+  id: string;
+  openedAt: string;
+  closedAt?: string;
+  initialCash: number;
+  totalSales?: number;
+  totalCash?: number;
+  totalTerminal?: number;
+  totalExpenses?: number;
+  finalCash?: number;
+  status: 'open' | 'closed';
+}
+
+export interface Expense {
+  id: string;
+  daySessionId: string;
+  description: string;
+  amount: number;
+  createdAt: string;
 }

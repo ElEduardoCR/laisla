@@ -8,7 +8,7 @@ import FloatingCart from '@/components/FloatingCart';
 import CartDrawer from '@/components/CartDrawer';
 
 export default function HomePage() {
-  const { categories, products } = useApp();
+  const { categories, products, isDayOpen } = useApp();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
 
@@ -18,6 +18,26 @@ export default function HomePage() {
 
   const availableProducts = filteredProducts.filter(p => p.available);
   const unavailableProducts = filteredProducts.filter(p => !p.available);
+
+  if (!isDayOpen) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-6">
+        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+          <div className="text-6xl mb-4">🔴</div>
+          <h2 className="text-2xl font-bold text-foreground mb-2">Día no iniciado</h2>
+          <p className="text-gray-500 mb-6 max-w-sm">
+            Para empezar a tomar pedidos, primero debes iniciar el día desde la configuración.
+          </p>
+          <a
+            href="/configuracion"
+            className="bg-primary hover:bg-primary-dark text-white font-bold px-6 py-3 rounded-xl transition-colors"
+          >
+            ⚙️ Ir a Configuración
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">

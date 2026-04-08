@@ -6,12 +6,13 @@ import { useApp } from '@/context/AppContext';
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { pendingOrdersCount } = useApp();
+  const { pendingOrdersCount, isDayOpen } = useApp();
 
   const links = [
     { href: '/', label: 'Menú', icon: '🍽️' },
     { href: '/cocina', label: 'Cocina', icon: '👨‍🍳' },
-    { href: '/configuracion', label: 'Configuración', icon: '⚙️' },
+    { href: '/reportes', label: 'Reportes', icon: '📊' },
+    { href: '/configuracion', label: 'Config', icon: '⚙️' },
   ];
 
   return (
@@ -21,6 +22,12 @@ export default function Navbar() {
           <Link href="/" className="flex items-center gap-2">
             <span className="text-2xl">🦐</span>
             <span className="text-white font-bold text-xl hidden sm:block">POS Mariscos</span>
+            {/* Day status indicator */}
+            <span className={`hidden sm:inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full ${
+              isDayOpen ? 'bg-success/30 text-white' : 'bg-red-500/30 text-white/80'
+            }`}>
+              {isDayOpen ? '🟢 Abierto' : '🔴 Cerrado'}
+            </span>
           </Link>
 
           <div className="flex items-center gap-1 sm:gap-2">

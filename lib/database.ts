@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Category, Product, Order, OrderItem } from '@/types';
+import { Category, Product, Order, OrderItem, DaySession, Expense } from '@/types';
 
 // ── Helpers ──
 
@@ -43,6 +43,7 @@ function mapOrderRow(row: Record<string, unknown>, items: OrderItem[]): Order {
     change: row.change != null ? Number(row.change) : undefined,
     createdAt: row.created_at as string,
     completedAt: (row.completed_at as string) || undefined,
+    daySessionId: (row.day_session_id as string) || undefined,
     items,
   };
 }
@@ -200,6 +201,7 @@ export async function insertOrder(
       takeout: order.takeout,
       status: order.status,
       created_at: order.createdAt,
+      day_session_id: order.daySessionId || null,
     });
   if (oErr) throw oErr;
 
@@ -249,6 +251,191 @@ export async function completeOrderDb(
     })
     .eq('id', orderId);
   if (error) throw error;
+}
+
+// ══════════════════════════════════════════════
+// SYSTEM CONFIG
+// ══════════════════════════════════════════════
+
+export async function getConfigValue(key: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('system_config')
+    .select('value')
+    .eq('key', key)
+    .single();
+  if (error) return null;
+  return data?.value ?? null;
+}
+
+export async function setConfigValue(key: string, value: string): Promise<void> {
+  const { error } = await supabase
+    .from('system_config')
+    .upsert({ key, value });
+  if (error) throw error;
+}
+
+// ══════════════════════════════════════════════
+// DAY SESSIONS
+// ══════════════════════════════════════════════
+
+function mapDaySessionRow(row: Record<string, unknown>): DaySession {
+  return {
+    id: row.id as string,
+    openedAt: row.opened_at as string,
+    closedAt: (row.closed_at as string) || undefined,
+    initialCash: Number(row.initial_cash),
+    totalSales: row.total_sales != null ? Number(row.total_sales) : undefined,
+    totalCash: row.total_cash != null ? Number(row.total_cash) : undefined,
+    totalTerminal: row.total_terminal != null ? Number(row.total_terminal) : undefined,
+    totalExpenses: row.total_expenses != null ? Number(row.total_expenses) : undefined,
+    finalCash: row.final_cash != null ? Number(row.final_cash) : undefined,
+    status: row.status as DaySession['status'],
+  };
+}
+
+export async function fetchOpenSession(): Promise<DaySession | null> {
+  const { data, error } = await supabase
+    .from('day_sessions')
+    .select('*')
+    .eq('status', 'open')
+    .order('opened_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return mapDaySessionRow(data[0]);
+}
+
+export async function fetchAllSessions(): Promise<DaySession[]> {
+  const { data, error } = await supabase
+    .from('day_sessions')
+    .select('*')
+    .order('opened_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapDaySessionRow);
+}
+
+export async function openDaySession(initialCash: number): Promise<DaySession> {
+  const id = generateId();
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('day_sessions')
+    .insert({ id, opened_at: now, initial_cash: initialCash, status: 'open' });
+  if (error) throw error;
+  return { id, openedAt: now, initialCash, status: 'open' };
+}
+
+export async function closeDaySessionDb(
+  sessionId: string,
+  totals: {
+    totalSales: number;
+    totalCash: number;
+    totalTerminal: number;
+    totalExpenses: number;
+    finalCash: number;
+  }
+): Promise<void> {
+  const { error } = await supabase
+    .from('day_sessions')
+    .update({
+      status: 'closed',
+      closed_at: new Date().toISOString(),
+      total_sales: totals.totalSales,
+      total_cash: totals.totalCash,
+      total_terminal: totals.totalTerminal,
+      total_expenses: totals.totalExpenses,
+      final_cash: totals.finalCash,
+    })
+    .eq('id', sessionId);
+  if (error) throw error;
+}
+
+// ══════════════════════════════════════════════
+// EXPENSES
+// ══════════════════════════════════════════════
+
+function mapExpenseRow(row: Record<string, unknown>): Expense {
+  return {
+    id: row.id as string,
+    daySessionId: row.day_session_id as string,
+    description: row.description as string,
+    amount: Number(row.amount),
+    createdAt: row.created_at as string,
+  };
+}
+
+export async function fetchExpenses(sessionId: string): Promise<Expense[]> {
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('*')
+    .eq('day_session_id', sessionId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapExpenseRow);
+}
+
+export async function insertExpense(sessionId: string, description: string, amount: number): Promise<Expense> {
+  const id = generateId();
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('expenses')
+    .insert({ id, day_session_id: sessionId, description, amount, created_at: now });
+  if (error) throw error;
+  return { id, daySessionId: sessionId, description, amount, createdAt: now };
+}
+
+export async function deleteExpenseDb(id: string): Promise<void> {
+  const { error } = await supabase
+    .from('expenses')
+    .delete()
+    .eq('id', id);
+  if (error) throw error;
+}
+
+// ══════════════════════════════════════════════
+// REPORTS
+// ══════════════════════════════════════════════
+
+export async function fetchSessionsByMonth(year: number, month: number): Promise<DaySession[]> {
+  const startDate = new Date(year, month - 1, 1).toISOString();
+  const endDate = new Date(year, month, 1).toISOString();
+  const { data, error } = await supabase
+    .from('day_sessions')
+    .select('*')
+    .eq('status', 'closed')
+    .gte('opened_at', startDate)
+    .lt('opened_at', endDate)
+    .order('opened_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapDaySessionRow);
+}
+
+export async function fetchOrdersBySession(sessionId: string): Promise<Order[]> {
+  const { data: orderRows, error: oErr } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('day_session_id', sessionId)
+    .eq('status', 'completed')
+    .order('created_at', { ascending: true });
+  if (oErr) throw oErr;
+
+  if (!orderRows || orderRows.length === 0) return [];
+
+  const orderIds = orderRows.map(r => r.id);
+  const { data: itemRows, error: iErr } = await supabase
+    .from('order_items')
+    .select('*')
+    .in('order_id', orderIds);
+  if (iErr) throw iErr;
+
+  const itemsByOrder = new Map<string, OrderItem[]>();
+  for (const row of itemRows || []) {
+    const item = mapOrderItemRow(row);
+    const list = itemsByOrder.get(item.orderId) || [];
+    list.push(item);
+    itemsByOrder.set(item.orderId, list);
+  }
+
+  return orderRows.map(row => mapOrderRow(row, itemsByOrder.get(row.id as string) || []));
 }
 
 // ══════════════════════════════════════════════

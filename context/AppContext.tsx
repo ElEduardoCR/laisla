@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { Category, Product, CartItem, Order, OrderItem } from '@/types';
+import { Category, Product, CartItem, Order, OrderItem, DaySession, Expense } from '@/types';
 import { supabase } from '@/lib/supabase';
 import {
   fetchCategories, fetchProducts, fetchOrders, fetchOrderItems,
@@ -9,6 +9,8 @@ import {
   insertProduct, updateProductDb, deleteProductDb,
   insertOrder, updateOrderStatusDb, completeOrderDb,
   seedIfEmpty, generateId,
+  fetchOpenSession, openDaySession, closeDaySessionDb,
+  fetchExpenses, insertExpense, deleteExpenseDb,
 } from '@/lib/database';
 
 interface AppContextType {
@@ -43,6 +45,17 @@ interface AppContextType {
   completeOrder: (orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => void;
   pendingOrdersCount: number;
 
+  // Day session
+  activeSession: DaySession | null;
+  isDayOpen: boolean;
+  openDay: (initialCash: number) => Promise<void>;
+  closeDay: () => Promise<{ totalSales: number; totalCash: number; totalTerminal: number; totalExpenses: number; finalCash: number } | null>;
+
+  // Expenses
+  expenses: Expense[];
+  addExpense: (description: string, amount: number) => Promise<void>;
+  removeExpense: (id: string) => void;
+
   // Loading
   loaded: boolean;
 }
@@ -57,8 +70,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [customerName, setCustomerName] = useState('');
   const [takeout, setTakeout] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [activeSession, setActiveSession] = useState<DaySession | null>(null);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
 
-  // Track IDs we created locally to avoid duplicates from Realtime
   const localIds = useRef(new Set<string>());
 
   // ── Initial data load ──
@@ -66,14 +80,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async function init() {
       try {
         await seedIfEmpty();
-        const [cats, prods, ords] = await Promise.all([
+        const [cats, prods, ords, session] = await Promise.all([
           fetchCategories(),
           fetchProducts(),
           fetchOrders(),
+          fetchOpenSession(),
         ]);
         setCategories(cats);
         setProducts(prods);
         setOrders(ords);
+        if (session) {
+          setActiveSession(session);
+          const exps = await fetchExpenses(session.id);
+          setExpenses(exps);
+        }
       } catch (err) {
         console.error('Failed to load data:', err);
       } finally {
@@ -101,8 +121,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setCategories(prev => prev.map(c => c.id === row.id ? { ...c, name: row.name, order: Number(row.order) } : c));
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'categories' }, (payload) => {
-        const old = payload.old;
-        setCategories(prev => prev.filter(c => c.id !== old.id));
+        setCategories(prev => prev.filter(c => c.id !== payload.old.id));
       })
       // Products
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (payload) => {
@@ -124,14 +143,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } : p));
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload) => {
-        const old = payload.old;
-        setProducts(prev => prev.filter(p => p.id !== old.id));
+        setProducts(prev => prev.filter(p => p.id !== payload.old.id));
       })
       // Orders
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => {
         const row = payload.new;
         if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
-        // New order from another device — fetch its items
         setOrders(prev => {
           if (prev.some(o => o.id === row.id)) return prev;
           return [...prev, {
@@ -141,9 +158,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
             change: row.change != null ? Number(row.change) : undefined,
             completedAt: row.completed_at || undefined,
+            daySessionId: row.day_session_id || undefined,
           }];
         });
-        // Then fetch items async
         fetchOrderItems(row.id).then(items => {
           setOrders(prev => prev.map(o => o.id === row.id ? { ...o, items } : o));
         });
@@ -159,7 +176,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           completedAt: row.completed_at || undefined,
         } : o));
       })
-      // Order items (for items arriving from other devices)
+      // Order items
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'order_items' }, (payload) => {
         const row = payload.new;
         if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
@@ -173,6 +190,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (o.items.some(i => i.id === item.id)) return o;
           return { ...o, items: [...o.items, item] };
         }));
+      })
+      // Day sessions
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'day_sessions' }, (payload) => {
+        const row = payload.new;
+        if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
+        if (row.status === 'open') {
+          setActiveSession({
+            id: row.id, openedAt: row.opened_at, initialCash: Number(row.initial_cash), status: 'open',
+          });
+          setExpenses([]);
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'day_sessions' }, (payload) => {
+        const row = payload.new;
+        if (row.status === 'closed') {
+          setActiveSession(prev => prev?.id === row.id ? null : prev);
+        }
+      })
+      // Expenses
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'expenses' }, (payload) => {
+        const row = payload.new;
+        if (localIds.current.has(row.id)) { localIds.current.delete(row.id); return; }
+        setExpenses(prev => {
+          if (prev.some(e => e.id === row.id)) return prev;
+          return [...prev, {
+            id: row.id, daySessionId: row.day_session_id,
+            description: row.description, amount: Number(row.amount), createdAt: row.created_at,
+          }];
+        });
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'expenses' }, (payload) => {
+        setExpenses(prev => prev.filter(e => e.id !== payload.old.id));
       })
       .subscribe();
 
@@ -188,12 +237,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const addCategory = useCallback((name: string) => {
     const tempId = generateId();
     localIds.current.add(tempId);
-    // Optimistic
     setCategories(prev => [...prev, { id: tempId, name, order: prev.length + 1 }]);
-    // DB
     insertCategory(name, categories.length + 1).then(cat => {
       if (cat.id !== tempId) {
-        // Replace temp ID with real one (shouldn't happen since we use same generateId)
         setCategories(prev => prev.map(c => c.id === tempId ? { ...c, id: cat.id } : c));
       }
     }).catch(err => console.error('addCategory error:', err));
@@ -236,7 +282,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ══════════════════════════════════════════════
-  // CART (local only — no DB)
+  // CART (local only)
   // ══════════════════════════════════════════════
 
   const addToCart = useCallback((product: Product) => {
@@ -292,7 +338,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const orderId = generateId();
     const now = new Date().toISOString();
 
-    // Build order items from cart (snapshot product data)
     const orderItems: OrderItem[] = cart.map((item, i) => ({
       id: generateId() + i,
       orderId,
@@ -310,22 +355,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       takeout,
       status: 'pending',
       createdAt: now,
+      daySessionId: activeSession?.id,
     };
 
-    // Mark as locally created to avoid Realtime duplicates
     localIds.current.add(orderId);
     orderItems.forEach(item => localIds.current.add(item.id));
 
-    // Optimistic update
     setOrders(prev => [...prev, newOrder]);
     setCart([]);
     setCustomerName('');
     setTakeout(false);
 
-    // DB insert
     try {
       await insertOrder(
-        { id: orderId, customerName: newOrder.customerName, takeout, status: 'pending', createdAt: now },
+        { id: orderId, customerName: newOrder.customerName, takeout, status: 'pending', createdAt: now, daySessionId: activeSession?.id },
         orderItems
       );
     } catch (err) {
@@ -333,7 +376,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     return true;
-  }, [customerName, cart, takeout]);
+  }, [customerName, cart, takeout, activeSession]);
 
   const updateOrderStatusFn = useCallback((orderId: string, status: Order['status']) => {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
@@ -352,6 +395,82 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const pendingOrdersCount = orders.filter(o => o.status === 'pending' || o.status === 'preparing').length;
 
+  // ══════════════════════════════════════════════
+  // DAY SESSION
+  // ══════════════════════════════════════════════
+
+  const isDayOpen = activeSession !== null;
+
+  const openDay = useCallback(async (initialCash: number) => {
+    const id = generateId();
+    localIds.current.add(id);
+    const session: DaySession = {
+      id,
+      openedAt: new Date().toISOString(),
+      initialCash,
+      status: 'open',
+    };
+    setActiveSession(session);
+    setExpenses([]);
+    try {
+      await openDaySession(initialCash);
+    } catch (err) {
+      console.error('openDay error:', err);
+    }
+  }, []);
+
+  const closeDay = useCallback(async () => {
+    if (!activeSession) return null;
+
+    // Calculate totals from completed orders of this session
+    const sessionOrders = orders.filter(o => o.daySessionId === activeSession.id && o.status === 'completed');
+    const totalSales = sessionOrders.reduce((sum, o) => {
+      return sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
+    }, 0);
+    const totalCash = sessionOrders
+      .filter(o => o.paymentMethod === 'cash')
+      .reduce((sum, o) => sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0), 0);
+    const totalTerminal = sessionOrders
+      .filter(o => o.paymentMethod === 'terminal')
+      .reduce((sum, o) => sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0), 0);
+    const totalExp = expenses.reduce((sum, e) => sum + e.amount, 0);
+    const finalCash = activeSession.initialCash + totalCash - totalExp;
+
+    const totals = { totalSales, totalCash, totalTerminal, totalExpenses: totalExp, finalCash };
+
+    try {
+      await closeDaySessionDb(activeSession.id, totals);
+      setActiveSession(null);
+      setExpenses([]);
+    } catch (err) {
+      console.error('closeDay error:', err);
+    }
+
+    return totals;
+  }, [activeSession, orders, expenses]);
+
+  // ══════════════════════════════════════════════
+  // EXPENSES
+  // ══════════════════════════════════════════════
+
+  const addExpenseFn = useCallback(async (description: string, amount: number) => {
+    if (!activeSession) return;
+    const id = generateId();
+    localIds.current.add(id);
+    const exp: Expense = { id, daySessionId: activeSession.id, description, amount, createdAt: new Date().toISOString() };
+    setExpenses(prev => [...prev, exp]);
+    try {
+      await insertExpense(activeSession.id, description, amount);
+    } catch (err) {
+      console.error('addExpense error:', err);
+    }
+  }, [activeSession]);
+
+  const removeExpenseFn = useCallback((id: string) => {
+    setExpenses(prev => prev.filter(e => e.id !== id));
+    deleteExpenseDb(id).catch(err => console.error('removeExpense error:', err));
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -363,6 +482,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         cartTotal, cartCount,
         orders, placeOrder, updateOrderStatus: updateOrderStatusFn,
         completeOrder: completeOrderFn, pendingOrdersCount,
+        activeSession, isDayOpen, openDay, closeDay,
+        expenses, addExpense: addExpenseFn, removeExpense: removeExpenseFn,
         loaded,
       }}
     >
