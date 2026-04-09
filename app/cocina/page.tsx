@@ -184,23 +184,21 @@ function OrderCard({
   order,
   onStatusChange,
   onCharge,
-  variant = 'active',
 }: {
   order: Order;
   onStatusChange: (id: string, status: Order['status']) => void;
   onCharge?: (order: Order) => void;
-  variant?: 'active' | 'ready' | 'completed';
 }) {
   const { products, categories } = useApp();
-  
-  const statusStyles = {
+
+  const statusStyles: Record<Order['status'], string> = {
     pending: 'border-accent bg-accent/5',
     preparing: 'border-primary bg-primary/5',
     ready: 'border-success bg-success/5',
     completed: 'border-gray-300 bg-gray-50',
   };
 
-  const statusLabels: Record<string, { label: string; color: string }> = {
+  const statusLabels: Record<Order['status'], { label: string; color: string }> = {
     pending: { label: 'Pendiente', color: 'bg-accent text-white' },
     preparing: { label: 'Preparando', color: 'bg-primary text-white' },
     ready: { label: 'Listo', color: 'bg-success text-white' },
@@ -214,7 +212,7 @@ function OrderCard({
     const product = products.find(p => p.id === item.productId);
     const category = categories.find(c => c.id === product?.categoryId);
     const catName = category?.name || 'Otros';
-    
+
     if (!acc[catName]) acc[catName] = [];
     acc[catName].push(item);
     return acc;
@@ -279,14 +277,6 @@ function OrderCard({
 
       {/* Actions */}
       <div className="flex gap-2">
-        {order.status === 'pending' && (
-          <button
-            onClick={() => onStatusChange(order.id, 'preparing')}
-            className="flex-1 bg-primary hover:bg-primary-dark text-white font-bold py-2.5 rounded-lg transition-colors text-sm"
-          >
-            👨‍🍳 Preparando
-          </button>
-        )}
         {order.status === 'preparing' && (
           <button
             onClick={() => onStatusChange(order.id, 'ready')}
@@ -318,14 +308,38 @@ function OrderCard({
 }
 
 // ── Kitchen Page ──
+type TabId = 'preparing' | 'ready' | 'completed';
+
+const TABS: { id: TabId; label: string; icon: string; activeColor: string }[] = [
+  { id: 'preparing', label: 'Preparando', icon: '🔥', activeColor: 'bg-primary text-white shadow-md' },
+  { id: 'ready', label: 'Listos', icon: '✅', activeColor: 'bg-success text-white shadow-md' },
+  { id: 'completed', label: 'Cobrados', icon: '📋', activeColor: 'bg-gray-600 text-white shadow-md' },
+];
+
 export default function CocinaPage() {
   const { orders, updateOrderStatus, completeOrder } = useApp();
   const [chargingOrder, setChargingOrder] = useState<Order | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('preparing');
 
-  // Chronological order (oldest first) — orders are already stored in chronological order
-  const inProgressOrders = orders.filter(o => o.status === 'pending' || o.status === 'preparing');
+  // Any order that landed in the kitchen as "pending" (legacy) is also
+  // shown in the "Preparando" tab so nothing gets stuck.
+  const preparingOrders = orders.filter(o => o.status === 'preparing' || o.status === 'pending');
   const readyOrders = orders.filter(o => o.status === 'ready');
-  const completedOrders = orders.filter(o => o.status === 'completed').reverse(); // newest completed first
+  const completedOrders = orders.filter(o => o.status === 'completed').slice().reverse();
+
+  const counts: Record<TabId, number> = {
+    preparing: preparingOrders.length,
+    ready: readyOrders.length,
+    completed: completedOrders.length,
+  };
+
+  const ordersByTab: Record<TabId, Order[]> = {
+    preparing: preparingOrders,
+    ready: readyOrders,
+    completed: completedOrders,
+  };
+
+  const currentOrders = ordersByTab[activeTab];
 
   const handlePayCash = (amountPaid: number, change: number) => {
     if (chargingOrder) {
@@ -341,96 +355,84 @@ export default function CocinaPage() {
     }
   };
 
-  const hasAnyOrders = inProgressOrders.length > 0 || readyOrders.length > 0 || completedOrders.length > 0;
+  const emptyMessages: Record<TabId, { icon: string; title: string; subtitle: string }> = {
+    preparing: {
+      icon: '👨‍🍳',
+      title: 'No hay pedidos preparándose',
+      subtitle: 'Los pedidos nuevos aparecerán aquí automáticamente',
+    },
+    ready: {
+      icon: '✅',
+      title: 'No hay pedidos listos',
+      subtitle: 'Cuando marques un pedido como listo aparecerá aquí',
+    },
+    completed: {
+      icon: '📋',
+      title: 'No hay pedidos cobrados',
+      subtitle: 'Los pedidos cobrados se mostrarán aquí',
+    },
+  };
+
+  const empty = emptyMessages[activeTab];
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-          👨‍🍳 Cocina
-        </h1>
-        <div className="flex gap-2">
-          {inProgressOrders.length > 0 && (
-            <span className="bg-accent text-white text-sm font-bold px-3 py-1 rounded-full">
-              {inProgressOrders.length} en curso
-            </span>
-          )}
-          {readyOrders.length > 0 && (
-            <span className="bg-success text-white text-sm font-bold px-3 py-1 rounded-full">
-              {readyOrders.length} por cobrar
-            </span>
-          )}
-        </div>
+      <h1 className="text-2xl font-bold text-foreground mb-6 flex items-center gap-2">
+        👨‍🍳 Cocina
+      </h1>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-6 overflow-x-auto">
+        {TABS.map(tab => {
+          const isActive = activeTab === tab.id;
+          const count = counts[tab.id];
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                isActive
+                  ? tab.activeColor
+                  : 'bg-white text-gray-600 hover:bg-primary/10 border border-gray-200'
+              }`}
+            >
+              <span>{tab.icon}</span>
+              <span>{tab.label}</span>
+              {count > 0 && (
+                <span
+                  className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                    isActive ? 'bg-white/25 text-white' : 'bg-gray-100 text-gray-600'
+                  }`}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      {!hasAnyOrders ? (
+      {/* Grid or empty state */}
+      {currentOrders.length === 0 ? (
         <div className="text-center py-20 text-gray-400">
-          <div className="text-6xl mb-4">👨‍🍳</div>
-          <p className="text-xl font-medium">No hay pedidos por ahora</p>
-          <p className="text-sm mt-1">Los pedidos aparecerán aquí cuando el mesero los envíe</p>
+          <div className="text-6xl mb-4">{empty.icon}</div>
+          <p className="text-xl font-medium">{empty.title}</p>
+          <p className="text-sm mt-1">{empty.subtitle}</p>
         </div>
       ) : (
-        <div className="space-y-8">
-          {/* ── In progress (pending + preparing) ── */}
-          {inProgressOrders.length > 0 && (
-            <section>
-              <h2 className="text-lg font-bold text-foreground mb-4 flex items-center gap-2">
-                🔥 Pedidos en Curso
-                <span className="text-sm font-normal text-gray-400">({inProgressOrders.length})</span>
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {inProgressOrders.map(order => (
-                  <OrderCard
-                    key={order.id}
-                    order={order}
-                    onStatusChange={updateOrderStatus}
-                    variant="active"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* ── Ready to charge ── */}
-          {readyOrders.length > 0 && (
-            <section>
-              <h2 className="text-lg font-bold text-success mb-4 flex items-center gap-2">
-                ✅ Listos — Por Cobrar
-                <span className="text-sm font-normal text-gray-400">({readyOrders.length})</span>
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {readyOrders.map(order => (
-                  <OrderCard
-                    key={order.id}
-                    order={order}
-                    onStatusChange={updateOrderStatus}
-                    onCharge={setChargingOrder}
-                    variant="ready"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* ── Completed ── */}
-          {completedOrders.length > 0 && (
-            <section>
-              <h2 className="text-lg font-bold text-gray-400 mb-4 flex items-center gap-2">
-                📋 Terminados
-                <span className="text-sm font-normal">({completedOrders.length})</span>
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 opacity-60">
-                {completedOrders.map(order => (
-                  <OrderCard
-                    key={order.id}
-                    order={order}
-                    onStatusChange={updateOrderStatus}
-                    variant="completed"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
+        <div
+          className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ${
+            activeTab === 'completed' ? 'opacity-70' : ''
+          }`}
+        >
+          {currentOrders.map(order => (
+            <OrderCard
+              key={order.id}
+              order={order}
+              onStatusChange={updateOrderStatus}
+              onCharge={activeTab === 'ready' ? setChargingOrder : undefined}
+            />
+          ))}
         </div>
       )}
 

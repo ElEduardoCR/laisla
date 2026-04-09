@@ -357,7 +357,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       customerName: customerName.trim(),
       items: orderItems,
       takeout,
-      status: 'pending',
+      status: 'preparing',
       createdAt: now,
       daySessionId: activeSession?.id,
     };
@@ -372,7 +372,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     try {
       await insertOrder(
-        { id: orderId, customerName: newOrder.customerName, takeout, status: 'pending', createdAt: now, daySessionId: activeSession?.id },
+        { id: orderId, customerName: newOrder.customerName, takeout, status: 'preparing', createdAt: now, daySessionId: activeSession?.id },
         orderItems
       );
     } catch (err) {
@@ -397,7 +397,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .catch(err => console.error('completeOrder error:', err));
   }, []);
 
-  const pendingOrdersCount = orders.filter(o => o.status === 'pending' || o.status === 'preparing').length;
+  const pendingOrdersCount = orders.filter(o => o.status === 'preparing').length;
 
   // ══════════════════════════════════════════════
   // DAY SESSION
