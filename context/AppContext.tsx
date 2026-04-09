@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { Category, Product, CartItem, Order, OrderItem, DaySession, Expense } from '@/types';
+import { Category, Product, CartItem, Order, OrderItem, DaySession, Expense, DayReport, ProductSale, ExpenseEntry } from '@/types';
 import { supabase } from '@/lib/supabase';
 import {
   fetchCategories, fetchProducts, fetchOrders, fetchOrderItems,
@@ -9,7 +9,7 @@ import {
   insertProduct, updateProductDb, deleteProductDb,
   insertOrder, updateOrderStatusDb, completeOrderDb,
   seedIfEmpty, generateId,
-  fetchOpenSession, openDaySession, closeDaySessionDb,
+  fetchOpenSession, openDaySession, closeDayAndArchive,
   fetchExpenses, insertExpense, deleteExpenseDb,
 } from '@/lib/database';
 
@@ -202,11 +202,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setExpenses([]);
         }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'day_sessions' }, (payload) => {
-        const row = payload.new;
-        if (row.status === 'closed') {
-          setActiveSession(prev => prev?.id === row.id ? null : prev);
-        }
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'day_sessions' }, (payload) => {
+        // Day closed → session row deleted. Clear everything locally.
+        setActiveSession(prev => prev?.id === payload.old.id ? null : prev);
+        setExpenses([]);
+        setOrders([]);
+      })
+      // Orders deletion (fires on day close for other devices)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (payload) => {
+        setOrders(prev => prev.filter(o => o.id !== payload.old.id));
       })
       // Expenses
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'expenses' }, (payload) => {
@@ -439,9 +443,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const totals = { totalSales, totalCash, totalTerminal, totalExpenses: totalExp, finalCash };
 
+    // Build product breakdown snapshot
+    const productMap: Record<string, ProductSale> = {};
+    for (const order of sessionOrders) {
+      for (const item of order.items) {
+        const key = item.productName;
+        if (!productMap[key]) productMap[key] = { name: key, qty: 0, total: 0 };
+        productMap[key].qty += item.quantity;
+        productMap[key].total += item.productPrice * item.quantity;
+      }
+    }
+    const products: ProductSale[] = Object.values(productMap).sort((a, b) => b.total - a.total);
+
+    const expensesList: ExpenseEntry[] = expenses.map(e => ({ description: e.description, amount: e.amount }));
+
+    const report: DayReport = {
+      id: generateId(),
+      openedAt: activeSession.openedAt,
+      closedAt: new Date().toISOString(),
+      initialCash: activeSession.initialCash,
+      totalSales,
+      totalCash,
+      totalTerminal,
+      totalExpenses: totalExp,
+      finalCash,
+      ordersCount: sessionOrders.length,
+      products,
+      expensesList,
+    };
+
     try {
-      await closeDaySessionDb(activeSession.id, totals);
-      // Limpiar órdenes para que no se vean en el siguiente turno/día
+      // Inserta el reporte plano y borra orders/items/expenses/session.
+      await closeDayAndArchive(activeSession.id, report);
       setOrders([]);
       setActiveSession(null);
       setExpenses([]);

@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '@/context/AppContext';
-import { getConfigValue, setConfigValue, fetchSessionsByMonth, fetchOrdersBySession } from '@/lib/database';
-import { DaySession, Order } from '@/types';
+import { getConfigValue, setConfigValue, fetchReportsByMonth } from '@/lib/database';
+import { DayReport } from '@/types';
 
 // ══════════════════════════════════════════════
 // PASSWORD GATE (no sessionStorage — always asks)
@@ -471,43 +471,33 @@ function getFirstDayOfWeek(year: number, month: number) {
 
 function DayDetailModal({
   date,
-  sessions,
+  reports,
   onClose,
 }: {
   date: string;
-  sessions: DaySession[];
+  reports: DayReport[];
   onClose: () => void;
 }) {
-  const [ordersBySession, setOrdersBySession] = useState<Record<string, Order[]>>({});
-  const [loading, setLoading] = useState(true);
+  const dayTotalSales = reports.reduce((s, r) => s + r.totalSales, 0);
+  const dayTotalCash = reports.reduce((s, r) => s + r.totalCash, 0);
+  const dayTotalTerminal = reports.reduce((s, r) => s + r.totalTerminal, 0);
+  const dayTotalExpenses = reports.reduce((s, r) => s + r.totalExpenses, 0);
 
-  useEffect(() => {
-    async function load() {
-      const result: Record<string, Order[]> = {};
-      for (const s of sessions) {
-        result[s.id] = await fetchOrdersBySession(s.id);
-      }
-      setOrdersBySession(result);
-      setLoading(false);
-    }
-    load();
-  }, [sessions]);
-
-  const dayTotalSales = sessions.reduce((s, ses) => s + (ses.totalSales || 0), 0);
-  const dayTotalCash = sessions.reduce((s, ses) => s + (ses.totalCash || 0), 0);
-  const dayTotalTerminal = sessions.reduce((s, ses) => s + (ses.totalTerminal || 0), 0);
-  const dayTotalExpenses = sessions.reduce((s, ses) => s + (ses.totalExpenses || 0), 0);
-
+  // Aggregate product breakdown across all reports (turnos) of that day
   const productBreakdown: Record<string, { name: string; qty: number; total: number }> = {};
-  for (const sessionId of Object.keys(ordersBySession)) {
-    for (const order of ordersBySession[sessionId]) {
-      for (const item of order.items) {
-        const key = item.productName;
-        if (!productBreakdown[key]) productBreakdown[key] = { name: key, qty: 0, total: 0 };
-        productBreakdown[key].qty += item.quantity;
-        productBreakdown[key].total += item.productPrice * item.quantity;
-      }
+  for (const r of reports) {
+    for (const p of r.products) {
+      const key = p.name;
+      if (!productBreakdown[key]) productBreakdown[key] = { name: key, qty: 0, total: 0 };
+      productBreakdown[key].qty += p.qty;
+      productBreakdown[key].total += p.total;
     }
+  }
+
+  // Aggregate expenses across all reports
+  const allExpenses: { description: string; amount: number }[] = [];
+  for (const r of reports) {
+    for (const e of r.expensesList) allExpenses.push(e);
   }
 
   return (
@@ -544,22 +534,22 @@ function DayDetailModal({
             </div>
           </div>
 
-          {sessions.length > 1 && (
+          {reports.length > 1 && (
             <div className="p-4 border-b">
               <h3 className="font-bold text-sm text-gray-500 uppercase tracking-wide mb-3">
-                Turnos ({sessions.length})
+                Turnos ({reports.length})
               </h3>
               <div className="space-y-2">
-                {sessions.map((s, i) => (
-                  <div key={s.id} className="bg-gray-50 rounded-lg p-3 text-sm">
+                {reports.map((r, i) => (
+                  <div key={r.id} className="bg-gray-50 rounded-lg p-3 text-sm">
                     <div className="flex justify-between font-semibold mb-1">
                       <span>Turno {i + 1}</span>
-                      <span className="text-primary">${(s.totalSales || 0).toFixed(2)}</span>
+                      <span className="text-primary">${r.totalSales.toFixed(2)}</span>
                     </div>
                     <div className="flex gap-4 text-xs text-gray-500">
-                      <span>Inicio: ${(s.initialCash || 0).toFixed(2)}</span>
-                      <span>💵 ${(s.totalCash || 0).toFixed(2)}</span>
-                      <span>💳 ${(s.totalTerminal || 0).toFixed(2)}</span>
+                      <span>Inicio: ${r.initialCash.toFixed(2)}</span>
+                      <span>💵 ${r.totalCash.toFixed(2)}</span>
+                      <span>💳 ${r.totalTerminal.toFixed(2)}</span>
                     </div>
                   </div>
                 ))}
@@ -567,11 +557,9 @@ function DayDetailModal({
             </div>
           )}
 
-          <div className="p-4">
+          <div className="p-4 border-b">
             <h3 className="font-bold text-sm text-gray-500 uppercase tracking-wide mb-3">Productos Vendidos</h3>
-            {loading ? (
-              <p className="text-gray-400 text-sm py-4 text-center">Cargando...</p>
-            ) : Object.keys(productBreakdown).length > 0 ? (
+            {Object.keys(productBreakdown).length > 0 ? (
               <div className="divide-y">
                 {Object.values(productBreakdown).sort((a, b) => b.total - a.total).map(p => (
                   <div key={p.name} className="flex justify-between py-2 text-sm">
@@ -586,6 +574,20 @@ function DayDetailModal({
               <p className="text-gray-400 text-sm py-2">Sin productos vendidos</p>
             )}
           </div>
+
+          {allExpenses.length > 0 && (
+            <div className="p-4">
+              <h3 className="font-bold text-sm text-gray-500 uppercase tracking-wide mb-3">Gastos</h3>
+              <div className="divide-y">
+                {allExpenses.map((e, i) => (
+                  <div key={i} className="flex justify-between py-2 text-sm">
+                    <span className="text-gray-700">{e.description}</span>
+                    <span className="font-bold text-red-500">-${e.amount.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -596,17 +598,17 @@ function ReportesModule() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [sessions, setSessions] = useState<DaySession[]>([]);
+  const [reports, setReports] = useState<DayReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
 
   const loadMonth = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchSessionsByMonth(year, month);
-      setSessions(data);
+      const data = await fetchReportsByMonth(year, month);
+      setReports(data);
     } catch (err) {
-      console.error('fetchSessionsByMonth error:', err);
+      console.error('fetchReportsByMonth error:', err);
     }
     setLoading(false);
   }, [year, month]);
@@ -625,14 +627,15 @@ function ReportesModule() {
     setSelectedDay(null);
   };
 
-  const sessionsByDay: Record<number, DaySession[]> = {};
-  for (const s of sessions) {
-    const d = new Date(s.openedAt).getDate();
-    if (!sessionsByDay[d]) sessionsByDay[d] = [];
-    sessionsByDay[d].push(s);
+  // Group reports by day-of-month using closedAt
+  const reportsByDay: Record<number, DayReport[]> = {};
+  for (const r of reports) {
+    const d = new Date(r.closedAt).getDate();
+    if (!reportsByDay[d]) reportsByDay[d] = [];
+    reportsByDay[d].push(r);
   }
 
-  const monthTotalSales = sessions.reduce((s, ses) => s + (ses.totalSales || 0), 0);
+  const monthTotalSales = reports.reduce((s, r) => s + r.totalSales, 0);
   const daysInMonth = getDaysInMonth(year, month);
   const firstDayOffset = getFirstDayOfWeek(year, month);
 
@@ -641,7 +644,7 @@ function ReportesModule() {
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7 !== 0) cells.push(null);
 
-  const selectedSessions = selectedDay ? (sessionsByDay[selectedDay] || []) : [];
+  const selectedReports = selectedDay ? (reportsByDay[selectedDay] || []) : [];
   const selectedDateStr = selectedDay
     ? `${selectedDay} de ${MONTH_NAMES[month - 1]} ${year}`
     : '';
@@ -682,9 +685,9 @@ function ReportesModule() {
             if (day === null) {
               return <div key={`empty-${i}`} className="aspect-square" />;
             }
-            const daySessions = sessionsByDay[day];
-            const hasSales = daySessions && daySessions.length > 0;
-            const dayTotal = hasSales ? daySessions.reduce((s, ses) => s + (ses.totalSales || 0), 0) : 0;
+            const dayReports = reportsByDay[day];
+            const hasSales = dayReports && dayReports.length > 0;
+            const dayTotal = hasSales ? dayReports.reduce((s, r) => s + r.totalSales, 0) : 0;
             const isToday = day === now.getDate() && month === now.getMonth() + 1 && year === now.getFullYear();
 
             return (
@@ -708,9 +711,9 @@ function ReportesModule() {
                     ${dayTotal >= 1000 ? `${(dayTotal / 1000).toFixed(1)}k` : dayTotal.toFixed(0)}
                   </span>
                 )}
-                {daySessions && daySessions.length > 1 && (
+                {dayReports && dayReports.length > 1 && (
                   <span className="absolute top-0.5 right-0.5 bg-accent text-white text-[8px] font-bold w-3.5 h-3.5 rounded-full flex items-center justify-center">
-                    {daySessions.length}
+                    {dayReports.length}
                   </span>
                 )}
               </button>
@@ -719,16 +722,16 @@ function ReportesModule() {
         </div>
       </div>
 
-      {!loading && sessions.length === 0 && (
+      {!loading && reports.length === 0 && (
         <div className="text-center py-8 text-gray-400">
           <p className="text-sm">No hay cierres de caja registrados en este mes</p>
         </div>
       )}
 
-      {selectedDay && selectedSessions.length > 0 && (
+      {selectedDay && selectedReports.length > 0 && (
         <DayDetailModal
           date={selectedDateStr}
-          sessions={selectedSessions}
+          reports={selectedReports}
           onClose={() => setSelectedDay(null)}
         />
       )}

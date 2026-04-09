@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Category, Product, Order, OrderItem, DaySession, Expense } from '@/types';
+import { Category, Product, Order, OrderItem, DaySession, Expense, DayReport, ProductSale, ExpenseEntry } from '@/types';
 
 // ── Helpers ──
 
@@ -324,29 +324,54 @@ export async function openDaySession(initialCash: number): Promise<DaySession> {
   return { id, openedAt: now, initialCash, status: 'open' };
 }
 
-export async function closeDaySessionDb(
+/**
+ * Close the day: write a flat snapshot into `day_reports` and then delete
+ * all the working-day data (orders, order_items, expenses and the
+ * day_session itself). The report has no foreign keys, so it can be
+ * edited or deleted directly in the database without breaking anything.
+ */
+export async function closeDayAndArchive(
   sessionId: string,
-  totals: {
-    totalSales: number;
-    totalCash: number;
-    totalTerminal: number;
-    totalExpenses: number;
-    finalCash: number;
-  }
+  report: DayReport
 ): Promise<void> {
-  const { error } = await supabase
-    .from('day_sessions')
-    .update({
-      status: 'closed',
-      closed_at: new Date().toISOString(),
-      total_sales: totals.totalSales,
-      total_cash: totals.totalCash,
-      total_terminal: totals.totalTerminal,
-      total_expenses: totals.totalExpenses,
-      final_cash: totals.finalCash,
-    })
-    .eq('id', sessionId);
-  if (error) throw error;
+  // 1) Insert the flat report snapshot
+  const { error: rErr } = await supabase.from('day_reports').insert({
+    id: report.id,
+    opened_at: report.openedAt,
+    closed_at: report.closedAt,
+    initial_cash: report.initialCash,
+    total_sales: report.totalSales,
+    total_cash: report.totalCash,
+    total_terminal: report.totalTerminal,
+    total_expenses: report.totalExpenses,
+    final_cash: report.finalCash,
+    orders_count: report.ordersCount,
+    products: report.products,
+    expenses_list: report.expensesList,
+  });
+  if (rErr) throw rErr;
+
+  // 2) Delete order_items + orders for this session
+  const { data: orderRows, error: oErr } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('day_session_id', sessionId);
+  if (oErr) throw oErr;
+  const orderIds = (orderRows || []).map(r => r.id as string);
+  if (orderIds.length > 0) {
+    const { error: iDelErr } = await supabase.from('order_items').delete().in('order_id', orderIds);
+    if (iDelErr) throw iDelErr;
+    const { error: oDelErr } = await supabase.from('orders').delete().in('id', orderIds);
+    if (oDelErr) throw oDelErr;
+  }
+
+  // 3) Delete expenses of this session
+  const { error: eDelErr } = await supabase.from('expenses').delete().eq('day_session_id', sessionId);
+  if (eDelErr) throw eDelErr;
+
+  // 4) Delete the day_session itself
+  const { error: sDelErr } = await supabase.from('day_sessions').delete().eq('id', sessionId);
+  if (sDelErr) throw sDelErr;
 }
 
 // ══════════════════════════════════════════════
@@ -392,50 +417,39 @@ export async function deleteExpenseDb(id: string): Promise<void> {
 }
 
 // ══════════════════════════════════════════════
-// REPORTS
+// DAY REPORTS (flat, no foreign keys)
 // ══════════════════════════════════════════════
 
-export async function fetchSessionsByMonth(year: number, month: number): Promise<DaySession[]> {
+function mapDayReportRow(row: Record<string, unknown>): DayReport {
+  const products = row.products as ProductSale[] | null;
+  const expensesList = row.expenses_list as ExpenseEntry[] | null;
+  return {
+    id: row.id as string,
+    openedAt: row.opened_at as string,
+    closedAt: row.closed_at as string,
+    initialCash: Number(row.initial_cash),
+    totalSales: Number(row.total_sales),
+    totalCash: Number(row.total_cash),
+    totalTerminal: Number(row.total_terminal),
+    totalExpenses: Number(row.total_expenses),
+    finalCash: Number(row.final_cash),
+    ordersCount: Number(row.orders_count),
+    products: Array.isArray(products) ? products : [],
+    expensesList: Array.isArray(expensesList) ? expensesList : [],
+  };
+}
+
+export async function fetchReportsByMonth(year: number, month: number): Promise<DayReport[]> {
   const startDate = new Date(year, month - 1, 1).toISOString();
   const endDate = new Date(year, month, 1).toISOString();
   const { data, error } = await supabase
-    .from('day_sessions')
+    .from('day_reports')
     .select('*')
-    .eq('status', 'closed')
-    .gte('opened_at', startDate)
-    .lt('opened_at', endDate)
-    .order('opened_at', { ascending: true });
+    .gte('closed_at', startDate)
+    .lt('closed_at', endDate)
+    .order('closed_at', { ascending: true });
   if (error) throw error;
-  return (data || []).map(mapDaySessionRow);
-}
-
-export async function fetchOrdersBySession(sessionId: string): Promise<Order[]> {
-  const { data: orderRows, error: oErr } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('day_session_id', sessionId)
-    .eq('status', 'completed')
-    .order('created_at', { ascending: true });
-  if (oErr) throw oErr;
-
-  if (!orderRows || orderRows.length === 0) return [];
-
-  const orderIds = orderRows.map(r => r.id);
-  const { data: itemRows, error: iErr } = await supabase
-    .from('order_items')
-    .select('*')
-    .in('order_id', orderIds);
-  if (iErr) throw iErr;
-
-  const itemsByOrder = new Map<string, OrderItem[]>();
-  for (const row of itemRows || []) {
-    const item = mapOrderItemRow(row);
-    const list = itemsByOrder.get(item.orderId) || [];
-    list.push(item);
-    itemsByOrder.set(item.orderId, list);
-  }
-
-  return orderRows.map(row => mapOrderRow(row, itemsByOrder.get(row.id as string) || []));
+  return (data || []).map(mapDayReportRow);
 }
 
 // ══════════════════════════════════════════════

@@ -64,3 +64,29 @@ export interface Expense {
   amount: number;
   createdAt: string;
 }
+
+export interface ProductSale {
+  name: string;
+  qty: number;
+  total: number;
+}
+
+export interface ExpenseEntry {
+  description: string;
+  amount: number;
+}
+
+export interface DayReport {
+  id: string;
+  openedAt: string;
+  closedAt: string;
+  initialCash: number;
+  totalSales: number;
+  totalCash: number;
+  totalTerminal: number;
+  totalExpenses: number;
+  finalCash: number;
+  ordersCount: number;
+  products: ProductSale[];
+  expensesList: ExpenseEntry[];
+}
