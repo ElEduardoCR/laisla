@@ -434,12 +434,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .filter(o => o.paymentMethod === 'terminal')
       .reduce((sum, o) => sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0), 0);
     const totalExp = expenses.reduce((sum, e) => sum + e.amount, 0);
-    const finalCash = activeSession.initialCash + totalCash - totalExp;
+    // Efectivo esperado = inicial + venta total - terminal - gastos
+    const finalCash = activeSession.initialCash + totalSales - totalTerminal - totalExp;
 
     const totals = { totalSales, totalCash, totalTerminal, totalExpenses: totalExp, finalCash };
 
     try {
       await closeDaySessionDb(activeSession.id, totals);
+      // Limpiar órdenes para que no se vean en el siguiente turno/día
+      setOrders([]);
       setActiveSession(null);
       setExpenses([]);
     } catch (err) {

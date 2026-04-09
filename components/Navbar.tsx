@@ -11,7 +11,6 @@ export default function Navbar() {
   const links = [
     { href: '/', label: 'Menú', icon: '🍽️' },
     { href: '/cocina', label: 'Cocina', icon: '👨‍🍳' },
-    { href: '/reportes', label: 'Reportes', icon: '📊' },
     { href: '/configuracion', label: 'Config', icon: '⚙️' },
   ];
 
