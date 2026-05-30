@@ -223,6 +223,22 @@ export async function insertOrder(
   }
 }
 
+export async function updateOrderItemQuantityDb(itemId: string, quantity: number): Promise<void> {
+  const { error } = await supabase
+    .from('order_items')
+    .update({ quantity })
+    .eq('id', itemId);
+  if (error) throw error;
+}
+
+export async function deleteOrderItemDb(itemId: string): Promise<void> {
+  const { error } = await supabase
+    .from('order_items')
+    .delete()
+    .eq('id', itemId);
+  if (error) throw error;
+}
+
 export async function appendOrderItemsDb(items: OrderItem[]): Promise<void> {
   if (items.length === 0) return;
   const { error } = await supabase

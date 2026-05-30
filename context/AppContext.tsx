@@ -8,6 +8,7 @@ import {
   insertCategory, updateCategoryDb, deleteCategoryDb,
   insertProduct, updateProductDb, deleteProductDb,
   insertOrder, updateOrderStatusDb, completeOrderDb, appendOrderItemsDb,
+  updateOrderItemQuantityDb, deleteOrderItemDb,
   seedIfEmpty, generateId,
   fetchOpenSession, openDaySession, closeDayAndArchive,
   fetchExpenses, insertExpense, deleteExpenseDb,
@@ -43,6 +44,8 @@ interface AppContextType {
   placeOrder: () => Promise<boolean>;
   updateOrderStatus: (orderId: string, status: Order['status']) => void;
   appendItemsToOrder: (orderId: string, items: CartItem[]) => Promise<boolean>;
+  decreaseOrderItemQuantity: (orderId: string, itemId: string, by?: number) => Promise<boolean>;
+  removeOrderItem: (orderId: string, itemId: string) => Promise<boolean>;
   completeOrder: (orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => void;
   pendingOrdersCount: number;
 
@@ -191,6 +194,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (o.items.some(i => i.id === item.id)) return o;
           return { ...o, items: [...o.items, item] };
         }));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'order_items' }, (payload) => {
+        const row = payload.new;
+        setOrders(prev => prev.map(o => ({
+          ...o,
+          items: o.items.map(i =>
+            i.id === row.id
+              ? { ...i, quantity: Number(row.quantity), notes: row.notes || undefined }
+              : i
+          ),
+        })));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'order_items' }, (payload) => {
+        const id = payload.old.id as string;
+        setOrders(prev => prev.map(o => ({
+          ...o,
+          items: o.items.filter(i => i.id !== id),
+        })));
       })
       // Day sessions
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'day_sessions' }, (payload) => {
@@ -419,6 +440,63 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [orders]);
 
+  const decreaseOrderItemQuantityFn = useCallback(async (orderId: string, itemId: string, by: number = 1) => {
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return false;
+    if (target.status !== 'preparing' && target.status !== 'pending' && target.status !== 'ready') return false;
+
+    const item = target.items.find(i => i.id === itemId);
+    if (!item) return false;
+
+    const newQty = item.quantity - by;
+
+    if (newQty <= 0) {
+      setOrders(prev => prev.map(o =>
+        o.id === orderId
+          ? { ...o, items: o.items.filter(i => i.id !== itemId) }
+          : o
+      ));
+      try {
+        await deleteOrderItemDb(itemId);
+      } catch (err) {
+        console.error('decreaseOrderItemQuantity (delete) error:', err);
+      }
+    } else {
+      setOrders(prev => prev.map(o =>
+        o.id === orderId
+          ? { ...o, items: o.items.map(i => i.id === itemId ? { ...i, quantity: newQty } : i) }
+          : o
+      ));
+      try {
+        await updateOrderItemQuantityDb(itemId, newQty);
+      } catch (err) {
+        console.error('decreaseOrderItemQuantity error:', err);
+      }
+    }
+
+    return true;
+  }, [orders]);
+
+  const removeOrderItemFn = useCallback(async (orderId: string, itemId: string) => {
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return false;
+    if (target.status !== 'preparing' && target.status !== 'pending' && target.status !== 'ready') return false;
+
+    setOrders(prev => prev.map(o =>
+      o.id === orderId
+        ? { ...o, items: o.items.filter(i => i.id !== itemId) }
+        : o
+    ));
+
+    try {
+      await deleteOrderItemDb(itemId);
+    } catch (err) {
+      console.error('removeOrderItem error:', err);
+    }
+
+    return true;
+  }, [orders]);
+
   const completeOrderFn = useCallback((orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => {
     setOrders(prev => prev.map(o =>
       o.id === orderId
@@ -550,6 +628,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         cartTotal, cartCount,
         orders, placeOrder, updateOrderStatus: updateOrderStatusFn,
         appendItemsToOrder: appendItemsToOrderFn,
+        decreaseOrderItemQuantity: decreaseOrderItemQuantityFn,
+        removeOrderItem: removeOrderItemFn,
         completeOrder: completeOrderFn, pendingOrdersCount,
         activeSession, isDayOpen, openDay, closeDay,
         expenses, addExpense: addExpenseFn, removeExpense: removeExpenseFn,

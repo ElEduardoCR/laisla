@@ -11,7 +11,13 @@ interface Props {
 }
 
 export default function EditOrderModal({ order, onClose }: Props) {
-  const { categories, products, appendItemsToOrder } = useApp();
+  const {
+    categories,
+    products,
+    appendItemsToOrder,
+    decreaseOrderItemQuantity,
+    removeOrderItem,
+  } = useApp();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [extraItems, setExtraItems] = useState<CartItem[]>([]);
   const [saving, setSaving] = useState(false);
@@ -148,6 +154,64 @@ export default function EditOrderModal({ order, onClose }: Props) {
 
               {/* Products grid */}
               <div className="flex-1 overflow-y-auto p-4">
+                {/* Existing items in the order */}
+                {order.items.length > 0 && (
+                  <div className="mb-5">
+                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
+                      Productos en el pedido
+                    </h3>
+                    <div className="space-y-2">
+                      {order.items.map(item => (
+                        <div
+                          key={item.id}
+                          className="bg-white border rounded-lg p-3 flex items-center gap-3"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-sm text-foreground truncate">
+                              {item.productName}
+                            </p>
+                            <p className="text-gray-500 text-xs">
+                              ${item.productPrice.toFixed(2)} c/u · subtotal $
+                              {(item.productPrice * item.quantity).toFixed(2)}
+                            </p>
+                            {item.notes && (
+                              <p className="text-xs text-red-500 font-medium mt-0.5">
+                                ⚠️ {item.notes}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => decreaseOrderItemQuantity(order.id, item.id, 1)}
+                              title={
+                                item.quantity > 1
+                                  ? 'Quitar 1'
+                                  : 'Eliminar producto'
+                              }
+                              className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 flex items-center justify-center text-base font-bold transition-colors"
+                            >
+                              −
+                            </button>
+                            <span className="w-8 text-center font-bold text-sm">
+                              {item.quantity}
+                            </span>
+                            <button
+                              onClick={() => removeOrderItem(order.id, item.id)}
+                              title="Eliminar línea completa"
+                              className="w-8 h-8 rounded-full text-red-400 hover:text-white hover:bg-red-500 flex items-center justify-center text-base transition-colors"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
+                  Agregar más productos
+                </h3>
                 {availableProducts.length === 0 ? (
                   <div className="text-center py-10 text-gray-400">
                     <div className="text-4xl mb-2">🍤</div>
