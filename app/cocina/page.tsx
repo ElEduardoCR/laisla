@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { Order } from '@/types';
+import EditOrderModal from '@/components/EditOrderModal';
 
 function formatTime(iso: string) {
   const date = new Date(iso);
@@ -184,12 +185,18 @@ function OrderCard({
   order,
   onStatusChange,
   onCharge,
+  onEdit,
 }: {
   order: Order;
   onStatusChange: (id: string, status: Order['status']) => void;
   onCharge?: (order: Order) => void;
+  onEdit?: (order: Order) => void;
 }) {
   const { products, categories } = useApp();
+  const canEdit =
+    order.status === 'preparing' ||
+    order.status === 'pending' ||
+    order.status === 'ready';
 
   const statusStyles: Record<Order['status'], string> = {
     pending: 'border-accent bg-accent/5',
@@ -235,6 +242,16 @@ function OrderCard({
           <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${statusLabels[order.status].color}`}>
             {statusLabels[order.status].label}
           </span>
+          {canEdit && onEdit && (
+            <button
+              onClick={() => onEdit(order)}
+              title="Agregar productos"
+              aria-label="Agregar productos al pedido"
+              className="w-8 h-8 rounded-full bg-white border-2 border-primary text-primary hover:bg-primary hover:text-white flex items-center justify-center text-sm transition-colors shadow-sm"
+            >
+              ✏️
+            </button>
+          )}
         </div>
       </div>
 
@@ -319,7 +336,13 @@ const TABS: { id: TabId; label: string; icon: string; activeColor: string }[] = 
 export default function CocinaPage() {
   const { orders, updateOrderStatus, completeOrder } = useApp();
   const [chargingOrder, setChargingOrder] = useState<Order | null>(null);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('preparing');
+
+  // Keep edited order in sync with context (so newly added items appear live)
+  const liveEditingOrder = editingOrder
+    ? orders.find(o => o.id === editingOrder.id) ?? null
+    : null;
 
   // Any order that landed in the kitchen as "pending" (legacy) is also
   // shown in the "Preparando" tab so nothing gets stuck.
@@ -431,6 +454,7 @@ export default function CocinaPage() {
               order={order}
               onStatusChange={updateOrderStatus}
               onCharge={activeTab === 'ready' ? setChargingOrder : undefined}
+              onEdit={activeTab !== 'completed' ? setEditingOrder : undefined}
             />
           ))}
         </div>
@@ -443,6 +467,14 @@ export default function CocinaPage() {
           onClose={() => setChargingOrder(null)}
           onPayCash={handlePayCash}
           onPayTerminal={handlePayTerminal}
+        />
+      )}
+
+      {/* Edit Order Modal */}
+      {liveEditingOrder && (
+        <EditOrderModal
+          order={liveEditingOrder}
+          onClose={() => setEditingOrder(null)}
         />
       )}
     </div>

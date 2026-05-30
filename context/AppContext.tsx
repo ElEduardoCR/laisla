@@ -7,7 +7,7 @@ import {
   fetchCategories, fetchProducts, fetchOrders, fetchOrderItems,
   insertCategory, updateCategoryDb, deleteCategoryDb,
   insertProduct, updateProductDb, deleteProductDb,
-  insertOrder, updateOrderStatusDb, completeOrderDb,
+  insertOrder, updateOrderStatusDb, completeOrderDb, appendOrderItemsDb,
   seedIfEmpty, generateId,
   fetchOpenSession, openDaySession, closeDayAndArchive,
   fetchExpenses, insertExpense, deleteExpenseDb,
@@ -42,6 +42,7 @@ interface AppContextType {
   orders: Order[];
   placeOrder: () => Promise<boolean>;
   updateOrderStatus: (orderId: string, status: Order['status']) => void;
+  appendItemsToOrder: (orderId: string, items: CartItem[]) => Promise<boolean>;
   completeOrder: (orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => void;
   pendingOrdersCount: number;
 
@@ -387,6 +388,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     updateOrderStatusDb(orderId, status).catch(err => console.error('updateOrderStatus error:', err));
   }, []);
 
+  const appendItemsToOrderFn = useCallback(async (orderId: string, items: CartItem[]) => {
+    if (items.length === 0) return false;
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return false;
+    if (target.status !== 'preparing' && target.status !== 'pending' && target.status !== 'ready') return false;
+
+    const newItems: OrderItem[] = items.map((item, i) => ({
+      id: generateId() + i,
+      orderId,
+      productId: item.product.id,
+      productName: item.product.name,
+      productPrice: item.product.price,
+      quantity: item.quantity,
+      notes: item.notes || undefined,
+    }));
+
+    newItems.forEach(item => localIds.current.add(item.id));
+
+    setOrders(prev => prev.map(o =>
+      o.id === orderId ? { ...o, items: [...o.items, ...newItems] } : o
+    ));
+
+    try {
+      await appendOrderItemsDb(newItems);
+    } catch (err) {
+      console.error('appendItemsToOrder error:', err);
+    }
+
+    return true;
+  }, [orders]);
+
   const completeOrderFn = useCallback((orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => {
     setOrders(prev => prev.map(o =>
       o.id === orderId
@@ -517,6 +549,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         addToCart, removeFromCart, updateCartQuantity, updateCartItemNotes, clearCart,
         cartTotal, cartCount,
         orders, placeOrder, updateOrderStatus: updateOrderStatusFn,
+        appendItemsToOrder: appendItemsToOrderFn,
         completeOrder: completeOrderFn, pendingOrdersCount,
         activeSession, isDayOpen, openDay, closeDay,
         expenses, addExpense: addExpenseFn, removeExpense: removeExpenseFn,

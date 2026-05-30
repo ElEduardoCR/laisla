@@ -223,6 +223,24 @@ export async function insertOrder(
   }
 }
 
+export async function appendOrderItemsDb(items: OrderItem[]): Promise<void> {
+  if (items.length === 0) return;
+  const { error } = await supabase
+    .from('order_items')
+    .insert(
+      items.map(item => ({
+        id: item.id,
+        order_id: item.orderId,
+        product_id: item.productId,
+        product_name: item.productName,
+        product_price: item.productPrice,
+        quantity: item.quantity,
+        notes: item.notes || null,
+      }))
+    );
+  if (error) throw error;
+}
+
 export async function updateOrderStatusDb(
   orderId: string,
   status: Order['status']
