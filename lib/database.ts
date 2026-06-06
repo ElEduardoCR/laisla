@@ -41,6 +41,8 @@ function mapOrderRow(row: Record<string, unknown>, items: OrderItem[]): Order {
     paymentMethod: (row.payment_method as Order['paymentMethod']) || undefined,
     amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
     change: row.change != null ? Number(row.change) : undefined,
+    paidCash: row.paid_cash != null ? Number(row.paid_cash) : undefined,
+    paidTerminal: row.paid_terminal != null ? Number(row.paid_terminal) : undefined,
     createdAt: row.created_at as string,
     completedAt: (row.completed_at as string) || undefined,
     daySessionId: (row.day_session_id as string) || undefined,
@@ -57,6 +59,7 @@ function mapOrderItemRow(row: Record<string, unknown>): OrderItem {
     productPrice: Number(row.product_price),
     quantity: Number(row.quantity),
     notes: (row.notes as string) || undefined,
+    paidQuantity: row.paid_quantity != null ? Number(row.paid_quantity) : 0,
   };
 }
 
@@ -283,6 +286,52 @@ export async function completeOrderDb(
       change: change ?? null,
       completed_at: new Date().toISOString(),
     })
+    .eq('id', orderId);
+  if (error) throw error;
+}
+
+/**
+ * Persist how many units of each order item have been paid so far
+ * (used by split-bill / partial charges). Supabase has no bulk
+ * "update many with different values", so we issue one update per item.
+ */
+export async function updateOrderItemsPaidQuantityDb(
+  items: { id: string; paidQuantity: number }[]
+): Promise<void> {
+  for (const item of items) {
+    const { error } = await supabase
+      .from('order_items')
+      .update({ paid_quantity: item.paidQuantity })
+      .eq('id', item.id);
+    if (error) throw error;
+  }
+}
+
+/**
+ * Update the running payment progress of an order. When the order is fully
+ * paid, pass status/paymentMethod/completedAt to close it out.
+ */
+export async function updateOrderPaymentDb(
+  orderId: string,
+  fields: {
+    paidCash: number;
+    paidTerminal: number;
+    status?: Order['status'];
+    paymentMethod?: Order['paymentMethod'];
+    completedAt?: string;
+  }
+): Promise<void> {
+  const update: Record<string, unknown> = {
+    paid_cash: fields.paidCash,
+    paid_terminal: fields.paidTerminal,
+  };
+  if (fields.status !== undefined) update.status = fields.status;
+  if (fields.paymentMethod !== undefined) update.payment_method = fields.paymentMethod;
+  if (fields.completedAt !== undefined) update.completed_at = fields.completedAt;
+
+  const { error } = await supabase
+    .from('orders')
+    .update(update)
     .eq('id', orderId);
   if (error) throw error;
 }

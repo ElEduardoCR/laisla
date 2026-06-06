@@ -9,6 +9,7 @@ import {
   insertProduct, updateProductDb, deleteProductDb,
   insertOrder, updateOrderStatusDb, completeOrderDb, appendOrderItemsDb,
   updateOrderItemQuantityDb, deleteOrderItemDb,
+  updateOrderItemsPaidQuantityDb, updateOrderPaymentDb,
   seedIfEmpty, generateId,
   fetchOpenSession, openDaySession, closeDayAndArchive,
   fetchExpenses, insertExpense, deleteExpenseDb,
@@ -46,6 +47,11 @@ interface AppContextType {
   appendItemsToOrder: (orderId: string, items: CartItem[]) => Promise<boolean>;
   decreaseOrderItemQuantity: (orderId: string, itemId: string, by?: number) => Promise<boolean>;
   removeOrderItem: (orderId: string, itemId: string) => Promise<boolean>;
+  chargeOrderItems: (
+    orderId: string,
+    selections: { itemId: string; quantity: number }[],
+    payment: { cashApplied: number; terminalApplied: number }
+  ) => Promise<boolean>;
   completeOrder: (orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => void;
   pendingOrdersCount: number;
 
@@ -177,6 +183,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           paymentMethod: row.payment_method || undefined,
           amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
           change: row.change != null ? Number(row.change) : undefined,
+          paidCash: row.paid_cash != null ? Number(row.paid_cash) : undefined,
+          paidTerminal: row.paid_terminal != null ? Number(row.paid_terminal) : undefined,
           completedAt: row.completed_at || undefined,
         } : o));
       })
@@ -188,6 +196,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           id: row.id, orderId: row.order_id, productId: row.product_id,
           productName: row.product_name, productPrice: Number(row.product_price),
           quantity: Number(row.quantity), notes: row.notes || undefined,
+          paidQuantity: row.paid_quantity != null ? Number(row.paid_quantity) : 0,
         };
         setOrders(prev => prev.map(o => {
           if (o.id !== item.orderId) return o;
@@ -201,7 +210,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ...o,
           items: o.items.map(i =>
             i.id === row.id
-              ? { ...i, quantity: Number(row.quantity), notes: row.notes || undefined }
+              ? {
+                  ...i,
+                  quantity: Number(row.quantity),
+                  notes: row.notes || undefined,
+                  paidQuantity: row.paid_quantity != null ? Number(row.paid_quantity) : i.paidQuantity ?? 0,
+                }
               : i
           ),
         })));
@@ -497,6 +511,77 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [orders]);
 
+  const chargeOrderItemsFn = useCallback(async (
+    orderId: string,
+    selections: { itemId: string; quantity: number }[],
+    payment: { cashApplied: number; terminalApplied: number }
+  ) => {
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return false;
+    if (target.status === 'completed') return false;
+
+    // Apply the selected quantities on top of what's already paid.
+    const updatedItems = target.items.map(item => {
+      const sel = selections.find(s => s.itemId === item.id);
+      if (!sel || sel.quantity <= 0) return item;
+      const alreadyPaid = item.paidQuantity ?? 0;
+      const newPaid = Math.min(item.quantity, alreadyPaid + sel.quantity);
+      return { ...item, paidQuantity: newPaid };
+    });
+
+    const changedItems = updatedItems
+      .filter((item, idx) => (item.paidQuantity ?? 0) !== (target.items[idx].paidQuantity ?? 0))
+      .map(item => ({ id: item.id, paidQuantity: item.paidQuantity ?? 0 }));
+
+    if (changedItems.length === 0 && payment.cashApplied === 0 && payment.terminalApplied === 0) {
+      return false;
+    }
+
+    const newPaidCash = (target.paidCash ?? 0) + payment.cashApplied;
+    const newPaidTerminal = (target.paidTerminal ?? 0) + payment.terminalApplied;
+
+    // Fully paid when every unit of every line has been covered.
+    const fullyPaid = updatedItems.every(i => (i.paidQuantity ?? 0) >= i.quantity);
+    const completedAt = fullyPaid ? new Date().toISOString() : undefined;
+    const paymentMethod: Order['paymentMethod'] | undefined = fullyPaid
+      ? (newPaidCash > 0 && newPaidTerminal > 0
+          ? 'mixed'
+          : newPaidTerminal > 0
+            ? 'terminal'
+            : 'cash')
+      : undefined;
+
+    setOrders(prev => prev.map(o => o.id === orderId
+      ? {
+          ...o,
+          items: updatedItems,
+          paidCash: newPaidCash,
+          paidTerminal: newPaidTerminal,
+          ...(fullyPaid
+            ? { status: 'completed' as const, paymentMethod, completedAt }
+            : {}),
+        }
+      : o
+    ));
+
+    try {
+      if (changedItems.length > 0) {
+        await updateOrderItemsPaidQuantityDb(changedItems);
+      }
+      await updateOrderPaymentDb(orderId, {
+        paidCash: newPaidCash,
+        paidTerminal: newPaidTerminal,
+        status: fullyPaid ? 'completed' : undefined,
+        paymentMethod,
+        completedAt,
+      });
+    } catch (err) {
+      console.error('chargeOrderItems error:', err);
+    }
+
+    return true;
+  }, [orders]);
+
   const completeOrderFn = useCallback((orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => {
     setOrders(prev => prev.map(o =>
       o.id === orderId
@@ -538,15 +623,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // Calculate totals from completed orders of this session
     const sessionOrders = orders.filter(o => o.daySessionId === activeSession.id && o.status === 'completed');
-    const totalSales = sessionOrders.reduce((sum, o) => {
-      return sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
+    const orderTotal = (o: Order) => o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
+    const totalSales = sessionOrders.reduce((sum, o) => sum + orderTotal(o), 0);
+    // Prefer the per-method amounts recorded by split/mixed payments; fall back
+    // to the legacy single paymentMethod for orders closed before this feature.
+    const totalCash = sessionOrders.reduce((sum, o) => {
+      if (o.paidCash != null || o.paidTerminal != null) return sum + (o.paidCash ?? 0);
+      return sum + (o.paymentMethod === 'cash' ? orderTotal(o) : 0);
     }, 0);
-    const totalCash = sessionOrders
-      .filter(o => o.paymentMethod === 'cash')
-      .reduce((sum, o) => sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0), 0);
-    const totalTerminal = sessionOrders
-      .filter(o => o.paymentMethod === 'terminal')
-      .reduce((sum, o) => sum + o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0), 0);
+    const totalTerminal = sessionOrders.reduce((sum, o) => {
+      if (o.paidCash != null || o.paidTerminal != null) return sum + (o.paidTerminal ?? 0);
+      return sum + (o.paymentMethod === 'terminal' ? orderTotal(o) : 0);
+    }, 0);
     const totalExp = expenses.reduce((sum, e) => sum + e.amount, 0);
     // Efectivo esperado = inicial + venta total - terminal - gastos
     const finalCash = activeSession.initialCash + totalSales - totalTerminal - totalExp;
@@ -630,6 +718,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         appendItemsToOrder: appendItemsToOrderFn,
         decreaseOrderItemQuantity: decreaseOrderItemQuantityFn,
         removeOrderItem: removeOrderItemFn,
+        chargeOrderItems: chargeOrderItemsFn,
         completeOrder: completeOrderFn, pendingOrdersCount,
         activeSession, isDayOpen, openDay, closeDay,
         expenses, addExpense: addExpenseFn, removeExpense: removeExpenseFn,

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { Order } from '@/types';
 import EditOrderModal from '@/components/EditOrderModal';
+import ChargeModal from '@/components/ChargeModal';
 
 function formatTime(iso: string) {
   const date = new Date(iso);
@@ -14,170 +15,8 @@ function getOrderTotal(order: Order) {
   return order.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
 }
 
-// ── Denomination buttons for cash payment ──
-const DENOMINATIONS = [
-  { label: '$20', value: 20 },
-  { label: '$50', value: 50 },
-  { label: '$100', value: 100 },
-  { label: '$200', value: 200 },
-  { label: '$500', value: 500 },
-  { label: '$1000', value: 1000 },
-];
-
-// ── Payment Modal ──
-function PaymentModal({
-  order,
-  onClose,
-  onPayCash,
-  onPayTerminal,
-}: {
-  order: Order;
-  onClose: () => void;
-  onPayCash: (amountPaid: number, change: number) => void;
-  onPayTerminal: () => void;
-}) {
-  const total = getOrderTotal(order);
-  const [amountPaid, setAmountPaid] = useState(0);
-  const [denomBreakdown, setDenomBreakdown] = useState<Record<number, number>>({});
-  const change = amountPaid - total;
-
-  const addDenomination = (value: number) => {
-    setAmountPaid(prev => prev + value);
-    setDenomBreakdown(prev => ({ ...prev, [value]: (prev[value] || 0) + 1 }));
-  };
-
-  const resetAmount = () => {
-    setAmountPaid(0);
-    setDenomBreakdown({});
-  };
-
-  const handleExactAmount = () => {
-    setAmountPaid(total);
-    setDenomBreakdown({});
-  };
-
-  return (
-    <>
-      <div className="fixed inset-0 bg-black/50 z-50" onClick={onClose} />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-          {/* Header */}
-          <div className="bg-primary text-white p-4 rounded-t-2xl flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold">💰 Cobrar</h2>
-              <p className="text-sm text-white/80">{order.customerName}</p>
-            </div>
-            <button onClick={onClose} className="text-white/80 hover:text-white text-2xl">✕</button>
-          </div>
-
-          {/* Order summary */}
-          <div className="p-4 border-b bg-gray-50">
-            <div className="space-y-1">
-              {order.items.map((item, i) => (
-                <div key={i} className="flex justify-between text-sm">
-                  <span className="text-gray-700">
-                    <span className="font-semibold">{item.quantity}x</span> {item.productName}
-                  </span>
-                  <span className="font-medium text-gray-500">${(item.productPrice * item.quantity).toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-between items-center mt-3 pt-3 border-t">
-              <span className="font-bold text-lg">Total a cobrar:</span>
-              <span className="font-bold text-2xl text-primary">${total.toFixed(2)}</span>
-            </div>
-          </div>
-
-          {/* Cash payment */}
-          <div className="p-4">
-            <h3 className="font-bold text-sm text-gray-500 uppercase tracking-wide mb-3">Pago en efectivo</h3>
-
-            {/* Denominations grid */}
-            <div className="grid grid-cols-3 gap-2 mb-4">
-              {DENOMINATIONS.map(d => (
-                <button
-                  key={d.value}
-                  onClick={() => addDenomination(d.value)}
-                  className="relative bg-white border-2 border-gray-200 hover:border-accent hover:bg-accent/5 rounded-xl py-3 text-center font-bold text-lg transition-all active:scale-95"
-                >
-                  {d.label}
-                  {denomBreakdown[d.value] && (
-                    <span className="absolute -top-2 -right-2 bg-accent text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">
-                      {denomBreakdown[d.value]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {/* Amount display */}
-            <div className="bg-gray-50 rounded-xl p-4 mb-4">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-medium text-gray-600">Pagó con:</span>
-                <span className="font-bold text-xl">${amountPaid.toFixed(2)}</span>
-              </div>
-              <div className={`flex justify-between items-center pt-2 border-t ${change >= 0 ? 'text-success' : 'text-red-500'}`}>
-                <span className="text-sm font-medium">
-                  {change >= 0 ? 'Cambio:' : 'Falta:'}
-                </span>
-                <span className="font-bold text-2xl">
-                  ${Math.abs(change).toFixed(2)}
-                </span>
-              </div>
-            </div>
-
-            {/* Quick actions */}
-            <div className="flex gap-2 mb-4">
-              <button
-                onClick={handleExactAmount}
-                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-2 rounded-lg text-sm transition-colors"
-              >
-                Monto exacto
-              </button>
-              <button
-                onClick={resetAmount}
-                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-2 rounded-lg text-sm transition-colors"
-              >
-                Reiniciar
-              </button>
-            </div>
-
-            {/* Confirm cash */}
-            <button
-              onClick={() => change >= 0 && onPayCash(amountPaid, change)}
-              disabled={change < 0 || amountPaid === 0}
-              className={`w-full font-bold py-3 rounded-xl text-sm transition-all ${
-                change >= 0 && amountPaid > 0
-                  ? 'bg-success hover:bg-success-dark text-white'
-                  : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-              }`}
-            >
-              💵 Cobrar en Efectivo {change >= 0 && amountPaid > 0 && `- Cambio: $${change.toFixed(2)}`}
-            </button>
-          </div>
-
-          {/* Terminal divider */}
-          <div className="px-4">
-            <div className="flex items-center gap-3 my-2">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-xs text-gray-400 font-medium">o bien</span>
-              <div className="flex-1 h-px bg-gray-200" />
-            </div>
-          </div>
-
-          {/* Terminal payment */}
-          <div className="p-4 pt-2">
-            <button
-              onClick={onPayTerminal}
-              className="w-full bg-primary hover:bg-primary-dark text-white font-bold py-3 rounded-xl text-sm transition-colors"
-            >
-              💳 Pago con Terminal
-            </button>
-          </div>
-        </div>
-      </div>
-    </>
-  );
+function getOrderPaid(order: Order) {
+  return (order.paidCash ?? 0) + (order.paidTerminal ?? 0);
 }
 
 // ── Order Card ──
@@ -213,6 +52,8 @@ function OrderCard({
   };
 
   const total = getOrderTotal(order);
+  const paid = getOrderPaid(order);
+  const remaining = Math.max(0, total - paid);
 
   // Group items by category
   const groupedItems = order.items.reduce((acc, item) => {
@@ -287,9 +128,17 @@ function OrderCard({
       </div>
 
       {/* Total */}
-      <div className="flex justify-between items-center border-t pt-3 mb-3">
-        <span className="font-semibold text-gray-600">Total:</span>
-        <span className="font-bold text-lg text-primary">${total.toFixed(2)}</span>
+      <div className="border-t pt-3 mb-3">
+        <div className="flex justify-between items-center">
+          <span className="font-semibold text-gray-600">Total:</span>
+          <span className="font-bold text-lg text-primary">${total.toFixed(2)}</span>
+        </div>
+        {order.status !== 'completed' && paid > 0 && (
+          <div className="flex justify-between items-center text-sm mt-1">
+            <span className="text-success font-medium">Pagado: ${paid.toFixed(2)}</span>
+            <span className="text-accent-dark font-bold">Resta: ${remaining.toFixed(2)}</span>
+          </div>
+        )}
       </div>
 
       {/* Actions */}
@@ -307,15 +156,17 @@ function OrderCard({
             onClick={() => onCharge(order)}
             className="flex-1 bg-accent hover:bg-accent-dark text-white font-bold py-2.5 rounded-lg transition-colors text-sm"
           >
-            💰 Cobrar
+            💰 {paid > 0 ? 'Seguir cobrando' : 'Cobrar'}
           </button>
         )}
         {order.status === 'completed' && (
           <div className="flex-1 text-center text-sm py-2">
             <span className="text-gray-500 font-medium">
-              {order.paymentMethod === 'cash'
-                ? `💵 Efectivo — Pagó: $${order.amountPaid?.toFixed(2)} | Cambio: $${order.change?.toFixed(2)}`
-                : '💳 Terminal'}
+              {order.paymentMethod === 'mixed'
+                ? `💵 $${(order.paidCash ?? 0).toFixed(2)} + 💳 $${(order.paidTerminal ?? 0).toFixed(2)}`
+                : order.paymentMethod === 'cash'
+                  ? `💵 Efectivo — $${(order.paidCash ?? total).toFixed(2)}`
+                  : `💳 Terminal — $${(order.paidTerminal ?? total).toFixed(2)}`}
             </span>
           </div>
         )}
@@ -334,7 +185,7 @@ const TABS: { id: TabId; label: string; icon: string; activeColor: string }[] = 
 ];
 
 export default function CocinaPage() {
-  const { orders, updateOrderStatus, completeOrder } = useApp();
+  const { orders, updateOrderStatus } = useApp();
   const [chargingOrder, setChargingOrder] = useState<Order | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('preparing');
@@ -342,6 +193,12 @@ export default function CocinaPage() {
   // Keep edited order in sync with context (so newly added items appear live)
   const liveEditingOrder = editingOrder
     ? orders.find(o => o.id === editingOrder.id) ?? null
+    : null;
+
+  // Keep the charging order in sync so the remaining bill updates live as
+  // each split payment is applied.
+  const liveChargingOrder = chargingOrder
+    ? orders.find(o => o.id === chargingOrder.id) ?? null
     : null;
 
   // Any order that landed in the kitchen as "pending" (legacy) is also
@@ -363,20 +220,6 @@ export default function CocinaPage() {
   };
 
   const currentOrders = ordersByTab[activeTab];
-
-  const handlePayCash = (amountPaid: number, change: number) => {
-    if (chargingOrder) {
-      completeOrder(chargingOrder.id, 'cash', amountPaid, change);
-      setChargingOrder(null);
-    }
-  };
-
-  const handlePayTerminal = () => {
-    if (chargingOrder) {
-      completeOrder(chargingOrder.id, 'terminal');
-      setChargingOrder(null);
-    }
-  };
 
   const emptyMessages: Record<TabId, { icon: string; title: string; subtitle: string }> = {
     preparing: {
@@ -460,13 +303,11 @@ export default function CocinaPage() {
         </div>
       )}
 
-      {/* Payment Modal */}
-      {chargingOrder && (
-        <PaymentModal
-          order={chargingOrder}
+      {/* Charge Modal (split / mixed payments) */}
+      {liveChargingOrder && (
+        <ChargeModal
+          order={liveChargingOrder}
           onClose={() => setChargingOrder(null)}
-          onPayCash={handlePayCash}
-          onPayTerminal={handlePayTerminal}
         />
       )}
 

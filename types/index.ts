@@ -28,6 +28,8 @@ export interface OrderItem {
   productPrice: number;
   quantity: number;
   notes?: string;
+  /** Units of this line that have already been paid (for split bills). Defaults to 0. */
+  paidQuantity?: number;
 }
 
 export interface Order {
@@ -36,9 +38,13 @@ export interface Order {
   items: OrderItem[];
   takeout: boolean;
   status: 'pending' | 'preparing' | 'ready' | 'completed';
-  paymentMethod?: 'cash' | 'terminal';
+  paymentMethod?: 'cash' | 'terminal' | 'mixed';
   amountPaid?: number;
   change?: number;
+  /** Accumulated cash revenue applied to this order (split/mixed payments). */
+  paidCash?: number;
+  /** Accumulated terminal/card revenue applied to this order (split/mixed payments). */
+  paidTerminal?: number;
   createdAt: string;
   completedAt?: string;
   daySessionId?: string;
