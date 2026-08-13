@@ -9,7 +9,7 @@ import {
   insertProduct, updateProductDb, deleteProductDb,
   insertOrder, updateOrderStatusDb, completeOrderDb, appendOrderItemsDb,
   updateOrderItemQuantityDb, deleteOrderItemDb,
-  updateOrderItemsPaidQuantityDb, updateOrderPaymentDb,
+  updateOrderItemsPaidQuantityDb, updateOrderPaymentDb, fetchOrderById,
   seedIfEmpty, generateId,
   fetchOpenSession, openDaySession, closeDayAndArchive,
   fetchExpenses, insertExpense, deleteExpenseDb,
@@ -441,14 +441,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     newItems.forEach(item => localIds.current.add(item.id));
 
+    // New food means the kitchen has to cook again, so an order that was
+    // already "Listo" goes back to "Preparando" instead of sitting in the
+    // ready tab where nobody would notice the extra items.
+    const backToPreparing = target.status !== 'preparing';
+
     setOrders(prev => prev.map(o =>
-      o.id === orderId ? { ...o, items: [...o.items, ...newItems] } : o
+      o.id === orderId
+        ? {
+            ...o,
+            items: [...o.items, ...newItems],
+            ...(backToPreparing ? { status: 'preparing' as const } : {}),
+          }
+        : o
     ));
 
     try {
       await appendOrderItemsDb(newItems);
     } catch (err) {
       console.error('appendItemsToOrder error:', err);
+      // Don't leave phantom items on screen that never reached the database.
+      const newIds = new Set(newItems.map(i => i.id));
+      setOrders(prev => prev.map(o =>
+        o.id === orderId
+          ? {
+              ...o,
+              items: o.items.filter(i => !newIds.has(i.id)),
+              ...(backToPreparing ? { status: target.status } : {}),
+            }
+          : o
+      ));
+      return false;
+    }
+
+    if (backToPreparing) {
+      try {
+        await updateOrderStatusDb(orderId, 'preparing');
+      } catch (err) {
+        console.error('appendItemsToOrder (status) error:', err);
+        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: target.status } : o));
+        return false;
+      }
     }
 
     return true;
@@ -551,6 +584,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             : 'cash')
       : undefined;
 
+    // Money is persisted BEFORE the local state changes: an optimistic update
+    // here would show "cuenta saldada" for a charge the database rejected, and
+    // the order would silently come back unpaid on the next reload.
+    try {
+      await updateOrderPaymentDb(orderId, {
+        paidCash: newPaidCash,
+        paidTerminal: newPaidTerminal,
+        status: fullyPaid ? 'completed' : undefined,
+        paymentMethod,
+        completedAt,
+      });
+    } catch (err) {
+      console.error('chargeOrderItems (payment) error:', err);
+      return false;
+    }
+
+    // The payment landed. If the per-item breakdown fails we cannot show the
+    // charge as clean either, so pull the order back from the database and let
+    // the caller report the failure.
+    if (changedItems.length > 0) {
+      try {
+        await updateOrderItemsPaidQuantityDb(changedItems);
+      } catch (err) {
+        console.error('chargeOrderItems (items) error:', err);
+        try {
+          const fresh = await fetchOrderById(orderId);
+          if (fresh) setOrders(prev => prev.map(o => o.id === orderId ? fresh : o));
+        } catch (refetchErr) {
+          console.error('chargeOrderItems (refetch) error:', refetchErr);
+        }
+        return false;
+      }
+    }
+
     setOrders(prev => prev.map(o => o.id === orderId
       ? {
           ...o,
@@ -563,21 +630,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       : o
     ));
-
-    try {
-      if (changedItems.length > 0) {
-        await updateOrderItemsPaidQuantityDb(changedItems);
-      }
-      await updateOrderPaymentDb(orderId, {
-        paidCash: newPaidCash,
-        paidTerminal: newPaidTerminal,
-        status: fullyPaid ? 'completed' : undefined,
-        paymentMethod,
-        completedAt,
-      });
-    } catch (err) {
-      console.error('chargeOrderItems error:', err);
-    }
 
     return true;
   }, [orders]);

@@ -183,6 +183,19 @@ export async function fetchOrders(): Promise<Order[]> {
   );
 }
 
+/** Re-read a single order (with its items) straight from the database. */
+export async function fetchOrderById(orderId: string): Promise<Order | null> {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('id', orderId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const items = await fetchOrderItems(orderId);
+  return mapOrderRow(data, items);
+}
+
 export async function fetchOrderItems(orderId: string): Promise<OrderItem[]> {
   const { data, error } = await supabase
     .from('order_items')

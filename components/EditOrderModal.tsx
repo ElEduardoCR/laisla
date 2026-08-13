@@ -22,6 +22,7 @@ export default function EditOrderModal({ order, onClose }: Props) {
   const [extraItems, setExtraItems] = useState<CartItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const canEdit =
     order.status === 'preparing' ||
@@ -74,15 +75,18 @@ export default function EditOrderModal({ order, onClose }: Props) {
   const handleConfirm = async () => {
     if (extraItems.length === 0 || !canEdit) return;
     setSaving(true);
+    setError(null);
     const ok = await appendItemsToOrder(order.id, extraItems);
     setSaving(false);
-    if (ok) {
-      setSuccess(true);
-      setTimeout(() => {
-        setSuccess(false);
-        onClose();
-      }, 1200);
+    if (!ok) {
+      setError('No se pudieron agregar los productos. Revisa la conexión e inténtalo de nuevo.');
+      return;
     }
+    setSuccess(true);
+    setTimeout(() => {
+      setSuccess(false);
+      onClose();
+    }, 1200);
   };
 
   return (
@@ -307,6 +311,11 @@ export default function EditOrderModal({ order, onClose }: Props) {
 
               {/* Footer */}
               <div className="border-t p-4 shrink-0 bg-white">
+                {error && (
+                  <p className="mb-3 text-sm font-semibold text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    ⚠️ {error}
+                  </p>
+                )}
                 <div className="flex justify-between items-center mb-3">
                   <span className="text-sm text-gray-600 font-medium">
                     {extraCount} {extraCount === 1 ? 'producto' : 'productos'} por agregar
@@ -315,6 +324,12 @@ export default function EditOrderModal({ order, onClose }: Props) {
                     +${extraTotal.toFixed(2)}
                   </span>
                 </div>
+                {order.status === 'ready' && extraItems.length > 0 && (
+                  <p className="text-xs text-gray-500 mb-2">
+                    🔥 El pedido regresará a <span className="font-semibold">Preparando</span> para que
+                    cocina vea los productos nuevos.
+                  </p>
+                )}
                 <button
                   onClick={handleConfirm}
                   disabled={extraItems.length === 0 || saving}

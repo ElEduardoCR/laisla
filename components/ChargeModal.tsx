@@ -23,13 +23,17 @@ export default function ChargeModal({ order, onClose }: Props) {
 
   // How many units of each line are selected for THIS charge.
   const [selection, setSelection] = useState<Record<string, number>>({});
-  // Amount of this charge that goes on the card terminal.
-  const [terminalAmount, setTerminalAmount] = useState(0);
+  // Amount of this charge that goes on the card terminal. Kept as the raw
+  // string so amounts like "250.50" can be typed digit by digit.
+  const [terminalInput, setTerminalInput] = useState('');
   // Cash tendered by the customer (for the cash part).
   const [amountPaid, setAmountPaid] = useState(0);
   const [denomBreakdown, setDenomBreakdown] = useState<Record<number, number>>({});
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const terminalAmount = parseFloat(terminalInput) || 0;
 
   const remainingOf = (itemId: string) => {
     const item = order.items.find(i => i.id === itemId);
@@ -89,13 +93,14 @@ export default function ChargeModal({ order, onClose }: Props) {
   };
 
   const allOnTerminal = () => {
-    setTerminalAmount(chargeTotal);
+    setTerminalInput(chargeTotal > 0 ? String(chargeTotal) : '');
     resetCash();
   };
 
   const handleConfirm = async () => {
     if (!canConfirm) return;
     setSaving(true);
+    setError(null);
 
     const selections = pendingItems
       .filter(i => (selection[i.id] || 0) > 0)
@@ -112,7 +117,10 @@ export default function ChargeModal({ order, onClose }: Props) {
     });
 
     setSaving(false);
-    if (!ok) return;
+    if (!ok) {
+      setError('No se pudo registrar el cobro. No se guardó nada: revisa la conexión e inténtalo de nuevo.');
+      return;
+    }
 
     if (fullyPaidAfter) {
       setSuccess(true);
@@ -123,7 +131,7 @@ export default function ChargeModal({ order, onClose }: Props) {
     } else {
       // Reset for the next person; the remaining bill will have gone down.
       setSelection({});
-      setTerminalAmount(0);
+      setTerminalInput('');
       resetCash();
     }
   };
@@ -263,16 +271,17 @@ export default function ChargeModal({ order, onClose }: Props) {
                     <span className="text-gray-500 font-bold">$</span>
                     <input
                       type="number"
+                      inputMode="decimal"
                       min={0}
                       max={chargeTotal}
-                      value={terminalAmount === 0 ? '' : terminalAmount}
-                      onChange={e => setTerminalAmount(parseFloat(e.target.value) || 0)}
+                      value={terminalInput}
+                      onChange={e => setTerminalInput(e.target.value)}
                       placeholder="0.00"
                       className="flex-1 px-3 py-2 border-2 border-gray-200 rounded-lg text-sm focus:outline-none focus:border-primary"
                     />
                     {terminalApplied > 0 && (
                       <button
-                        onClick={() => setTerminalAmount(0)}
+                        onClick={() => setTerminalInput('')}
                         className="text-xs text-gray-400 hover:text-gray-600 font-medium"
                       >
                         limpiar
@@ -337,6 +346,11 @@ export default function ChargeModal({ order, onClose }: Props) {
 
               {/* Footer confirm */}
               <div className="border-t p-4 shrink-0 bg-white">
+                {error && (
+                  <p className="mb-2 text-sm font-semibold text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    ⚠️ {error}
+                  </p>
+                )}
                 <button
                   onClick={handleConfirm}
                   disabled={!canConfirm}

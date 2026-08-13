@@ -151,7 +151,9 @@ function OrderCard({
             ✅ Listo
           </button>
         )}
-        {order.status === 'ready' && onCharge && (
+        {/* A partially paid order that went back to the kitchen (new items were
+            added) keeps its charge button so the split payment can continue. */}
+        {order.status !== 'completed' && (order.status === 'ready' || paid > 0) && onCharge && (
           <button
             onClick={() => onCharge(order)}
             className="flex-1 bg-accent hover:bg-accent-dark text-white font-bold py-2.5 rounded-lg transition-colors text-sm"
@@ -296,7 +298,7 @@ export default function CocinaPage() {
               key={order.id}
               order={order}
               onStatusChange={updateOrderStatus}
-              onCharge={activeTab === 'ready' ? setChargingOrder : undefined}
+              onCharge={activeTab !== 'completed' ? setChargingOrder : undefined}
               onEdit={activeTab !== 'completed' ? setEditingOrder : undefined}
             />
           ))}
