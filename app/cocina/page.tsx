@@ -5,18 +5,11 @@ import { useApp } from '@/context/AppContext';
 import { Order } from '@/types';
 import EditOrderModal from '@/components/EditOrderModal';
 import ChargeModal from '@/components/ChargeModal';
+import { orderTotal, orderPaid } from '@/lib/reporting';
 
 function formatTime(iso: string) {
   const date = new Date(iso);
   return date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
-}
-
-function getOrderTotal(order: Order) {
-  return order.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
-}
-
-function getOrderPaid(order: Order) {
-  return (order.paidCash ?? 0) + (order.paidTerminal ?? 0);
 }
 
 // ── Order Card ──
@@ -51,8 +44,8 @@ function OrderCard({
     completed: { label: 'Cobrado', color: 'bg-gray-500 text-white' },
   };
 
-  const total = getOrderTotal(order);
-  const paid = getOrderPaid(order);
+  const total = orderTotal(order);
+  const paid = orderPaid(order);
   const remaining = Math.max(0, total - paid);
 
   // Group items by category

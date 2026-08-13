@@ -72,6 +72,18 @@ export default function EditOrderModal({ order, onClose }: Props) {
     setExtraItems(prev => prev.filter(i => i.id !== cartItemId));
   };
 
+  const handleDecrease = async (itemId: string) => {
+    setError(null);
+    const ok = await decreaseOrderItemQuantity(order.id, itemId, 1);
+    if (!ok) setError('No se pudo quitar el producto. Las unidades ya cobradas no se pueden eliminar; si no es el caso, revisa la conexión.');
+  };
+
+  const handleRemove = async (itemId: string) => {
+    setError(null);
+    const ok = await removeOrderItem(order.id, itemId);
+    if (!ok) setError('No se pudo eliminar el producto. Las unidades ya cobradas no se pueden eliminar; si no es el caso, revisa la conexión.');
+  };
+
   const handleConfirm = async () => {
     if (extraItems.length === 0 || !canEdit) return;
     setSaving(true);
@@ -165,7 +177,13 @@ export default function EditOrderModal({ order, onClose }: Props) {
                       Productos en el pedido
                     </h3>
                     <div className="space-y-2">
-                      {order.items.map(item => (
+                      {order.items.map(item => {
+                        const paidUnits = item.paidQuantity ?? 0;
+                        // Charged units stay on the bill: the money is already
+                        // in the drawer for them.
+                        const canDecrease = item.quantity - 1 >= paidUnits;
+                        const canRemove = paidUnits === 0;
+                        return (
                         <div
                           key={item.id}
                           className="bg-white border rounded-lg p-3 flex items-center gap-3"
@@ -177,6 +195,9 @@ export default function EditOrderModal({ order, onClose }: Props) {
                             <p className="text-gray-500 text-xs">
                               ${item.productPrice.toFixed(2)} c/u · subtotal $
                               {(item.productPrice * item.quantity).toFixed(2)}
+                              {paidUnits > 0 && (
+                                <span className="text-success font-medium"> · {paidUnits} pagado(s)</span>
+                              )}
                             </p>
                             {item.notes && (
                               <p className="text-xs text-red-500 font-medium mt-0.5">
@@ -186,13 +207,16 @@ export default function EditOrderModal({ order, onClose }: Props) {
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
                             <button
-                              onClick={() => decreaseOrderItemQuantity(order.id, item.id, 1)}
+                              onClick={() => handleDecrease(item.id)}
+                              disabled={!canDecrease}
                               title={
-                                item.quantity > 1
-                                  ? 'Quitar 1'
-                                  : 'Eliminar producto'
+                                !canDecrease
+                                  ? 'Ya está pagado'
+                                  : item.quantity > 1
+                                    ? 'Quitar 1'
+                                    : 'Eliminar producto'
                               }
-                              className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 flex items-center justify-center text-base font-bold transition-colors"
+                              className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 disabled:opacity-40 disabled:hover:bg-gray-100 text-gray-700 flex items-center justify-center text-base font-bold transition-colors"
                             >
                               −
                             </button>
@@ -200,15 +224,17 @@ export default function EditOrderModal({ order, onClose }: Props) {
                               {item.quantity}
                             </span>
                             <button
-                              onClick={() => removeOrderItem(order.id, item.id)}
-                              title="Eliminar línea completa"
-                              className="w-8 h-8 rounded-full text-red-400 hover:text-white hover:bg-red-500 flex items-center justify-center text-base transition-colors"
+                              onClick={() => handleRemove(item.id)}
+                              disabled={!canRemove}
+                              title={canRemove ? 'Eliminar línea completa' : 'Ya está pagado'}
+                              className="w-8 h-8 rounded-full text-red-400 hover:text-white hover:bg-red-500 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-red-400 flex items-center justify-center text-base transition-colors"
                             >
                               🗑️
                             </button>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

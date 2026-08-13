@@ -284,68 +284,27 @@ export async function updateOrderStatusDb(
   if (error) throw error;
 }
 
-export async function completeOrderDb(
-  orderId: string,
-  paymentMethod: 'cash' | 'terminal',
-  amountPaid?: number,
-  change?: number
-): Promise<void> {
-  const { error } = await supabase
-    .from('orders')
-    .update({
-      status: 'completed',
-      payment_method: paymentMethod,
-      amount_paid: amountPaid ?? null,
-      change: change ?? null,
-      completed_at: new Date().toISOString(),
-    })
-    .eq('id', orderId);
-  if (error) throw error;
-}
-
 /**
- * Persist how many units of each order item have been paid so far
- * (used by split-bill / partial charges). Supabase has no bulk
- * "update many with different values", so we issue one update per item.
+ * Charge part (or all) of an order: mark the paid units, add the cash and card
+ * amounts and close the order if nothing is left owing — all in a single
+ * server-side transaction (see lib/migrate-v5.sql).
+ *
+ * The amounts are deltas, not totals: the database adds them to whatever is
+ * already recorded, so two devices charging the same bill can't overwrite each
+ * other. Called with no selections and zero amounts it simply re-checks
+ * whether the order is now settled.
  */
-export async function updateOrderItemsPaidQuantityDb(
-  items: { id: string; paidQuantity: number }[]
-): Promise<void> {
-  for (const item of items) {
-    const { error } = await supabase
-      .from('order_items')
-      .update({ paid_quantity: item.paidQuantity })
-      .eq('id', item.id);
-    if (error) throw error;
-  }
-}
-
-/**
- * Update the running payment progress of an order. When the order is fully
- * paid, pass status/paymentMethod/completedAt to close it out.
- */
-export async function updateOrderPaymentDb(
+export async function chargeOrderItemsDb(
   orderId: string,
-  fields: {
-    paidCash: number;
-    paidTerminal: number;
-    status?: Order['status'];
-    paymentMethod?: Order['paymentMethod'];
-    completedAt?: string;
-  }
+  selections: { itemId: string; quantity: number }[],
+  payment: { cashApplied: number; terminalApplied: number }
 ): Promise<void> {
-  const update: Record<string, unknown> = {
-    paid_cash: fields.paidCash,
-    paid_terminal: fields.paidTerminal,
-  };
-  if (fields.status !== undefined) update.status = fields.status;
-  if (fields.paymentMethod !== undefined) update.payment_method = fields.paymentMethod;
-  if (fields.completedAt !== undefined) update.completed_at = fields.completedAt;
-
-  const { error } = await supabase
-    .from('orders')
-    .update(update)
-    .eq('id', orderId);
+  const { error } = await supabase.rpc('charge_order_items', {
+    p_order_id: orderId,
+    p_cash: payment.cashApplied,
+    p_terminal: payment.terminalApplied,
+    p_selections: selections.map(s => ({ itemId: s.itemId, quantity: s.quantity })),
+  });
   if (error) throw error;
 }
 

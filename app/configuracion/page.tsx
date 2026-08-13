@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '@/context/AppContext';
 import { getConfigValue, setConfigValue, fetchReportsByMonth } from '@/lib/database';
+import { computeProductSales, computeSessionTotals, unchargedOrders, orderRemaining } from '@/lib/reporting';
 import { DayReport } from '@/types';
 
 // ══════════════════════════════════════════════
@@ -243,6 +244,8 @@ function DayModule() {
   const [expAmount, setExpAmount] = useState('');
   const [closeSummary, setCloseSummary] = useState<{ totalSales: number; totalCash: number; totalTerminal: number; totalExpenses: number; finalCash: number } | null>(null);
   const [closing, setClosing] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
 
   const handleOpenDay = async () => {
     const cash = parseFloat(initialCash) || 0;
@@ -251,9 +254,17 @@ function DayModule() {
   };
 
   const handleCloseDay = async () => {
+    // Closing deletes every order of the day, so anything still owing gets one
+    // explicit confirmation first.
+    if (pendingOrders.length > 0 && !confirmingClose) {
+      setConfirmingClose(true);
+      return;
+    }
     setClosing(true);
+    setConfirmingClose(false);
     const totals = await closeDay();
     if (totals) setCloseSummary(totals);
+    else setCloseError('No se pudo cerrar el día. Revisa la conexión e inténtalo de nuevo.');
     setClosing(false);
   };
 
@@ -264,22 +275,17 @@ function DayModule() {
     setExpAmount('');
   };
 
-  // Product breakdown for current session
+  // Same maths as the closing report (lib/reporting.ts), so what's on screen
+  // during the day is exactly what the corte will say.
   const sessionOrders = isDayOpen && activeSession
-    ? orders.filter(o => o.daySessionId === activeSession.id && o.status === 'completed')
+    ? orders.filter(o => o.daySessionId === activeSession.id)
     : [];
 
-  const productBreakdown: Record<string, { name: string; qty: number; total: number }> = {};
-  for (const order of sessionOrders) {
-    for (const item of order.items) {
-      const key = item.productName;
-      if (!productBreakdown[key]) productBreakdown[key] = { name: key, qty: 0, total: 0 };
-      productBreakdown[key].qty += item.quantity;
-      productBreakdown[key].total += item.productPrice * item.quantity;
-    }
-  }
+  const productBreakdown = computeProductSales(sessionOrders);
+  const pendingOrders = unchargedOrders(sessionOrders);
+  const pendingTotal = pendingOrders.reduce((s, o) => s + orderRemaining(o), 0);
 
-  const runningTotalSales = sessionOrders.reduce((s, o) => s + o.items.reduce((a, i) => a + i.productPrice * i.quantity, 0), 0);
+  const runningTotalSales = computeSessionTotals(sessionOrders, expenses, 0).totalSales;
   const runningTotalExp = expenses.reduce((s, e) => s + e.amount, 0);
 
   // Close summary modal
@@ -352,11 +358,11 @@ function DayModule() {
       </div>
 
       {/* Product breakdown */}
-      {Object.keys(productBreakdown).length > 0 && (
+      {productBreakdown.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm p-4">
           <h3 className="font-bold text-sm text-gray-500 uppercase tracking-wide mb-3">Venta por Producto</h3>
           <div className="divide-y">
-            {Object.values(productBreakdown).sort((a, b) => b.total - a.total).map(p => (
+            {productBreakdown.map(p => (
               <div key={p.name} className="flex justify-between py-2 text-sm">
                 <span className="text-gray-700"><span className="font-semibold">{p.qty}x</span> {p.name}</span>
                 <span className="font-bold text-primary">${p.total.toFixed(2)}</span>
@@ -399,11 +405,57 @@ function DayModule() {
         )}
       </div>
 
+      {/* Uncharged orders — they get deleted when the day closes */}
+      {pendingOrders.length > 0 && (
+        <div className="bg-accent/10 border-2 border-accent rounded-xl p-4">
+          <h3 className="font-bold text-accent-dark mb-2">
+            ⚠️ {pendingOrders.length} {pendingOrders.length === 1 ? 'pedido sin cobrar' : 'pedidos sin cobrar'}
+          </h3>
+          <div className="divide-y divide-accent/20">
+            {pendingOrders.map(o => (
+              <div key={o.id} className="flex justify-between py-1.5 text-sm">
+                <span className="text-gray-700">{o.customerName}</span>
+                <span className="font-bold text-accent-dark">${orderRemaining(o).toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-gray-600 mt-2">
+            Suman <span className="font-bold">${pendingTotal.toFixed(2)}</span> que no entrarán al corte.
+            Al cerrar el día estos pedidos se borran.
+          </p>
+        </div>
+      )}
+
       {/* Close day */}
-      <button onClick={handleCloseDay} disabled={closing}
-        className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-4 rounded-xl text-lg transition-colors disabled:opacity-50">
-        {closing ? 'Cerrando...' : '🌙 Cerrar Día y Corte de Caja'}
-      </button>
+      {closeError && (
+        <p className="text-sm font-semibold text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          ⚠️ {closeError}
+        </p>
+      )}
+      {confirmingClose ? (
+        <div className="bg-white border-2 border-red-300 rounded-xl p-4">
+          <p className="font-bold text-foreground mb-1">¿Cerrar el día de todas formas?</p>
+          <p className="text-sm text-gray-600 mb-3">
+            Se borrarán {pendingOrders.length} {pendingOrders.length === 1 ? 'pedido' : 'pedidos'} sin
+            cobrar por ${pendingTotal.toFixed(2)}. Esto no se puede deshacer.
+          </p>
+          <div className="flex gap-2">
+            <button onClick={() => setConfirmingClose(false)}
+              className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition-colors">
+              Cancelar
+            </button>
+            <button onClick={handleCloseDay} disabled={closing}
+              className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl transition-colors disabled:opacity-50">
+              {closing ? 'Cerrando...' : 'Sí, cerrar día'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={handleCloseDay} disabled={closing}
+          className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-4 rounded-xl text-lg transition-colors disabled:opacity-50">
+          {closing ? 'Cerrando...' : '🌙 Cerrar Día y Corte de Caja'}
+        </button>
+      )}
     </div>
   );
 }

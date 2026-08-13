@@ -7,13 +7,14 @@ import {
   fetchCategories, fetchProducts, fetchOrders, fetchOrderItems,
   insertCategory, updateCategoryDb, deleteCategoryDb,
   insertProduct, updateProductDb, deleteProductDb,
-  insertOrder, updateOrderStatusDb, completeOrderDb, appendOrderItemsDb,
+  insertOrder, updateOrderStatusDb, appendOrderItemsDb,
   updateOrderItemQuantityDb, deleteOrderItemDb,
-  updateOrderItemsPaidQuantityDb, updateOrderPaymentDb, fetchOrderById,
+  chargeOrderItemsDb, fetchOrderById,
   seedIfEmpty, generateId,
   fetchOpenSession, openDaySession, closeDayAndArchive,
   fetchExpenses, insertExpense, deleteExpenseDb,
 } from '@/lib/database';
+import { computeSessionTotals, computeProductSales, orderPaid } from '@/lib/reporting';
 
 interface AppContextType {
   // Menu
@@ -52,7 +53,6 @@ interface AppContextType {
     selections: { itemId: string; quantity: number }[],
     payment: { cashApplied: number; terminalApplied: number }
   ) => Promise<boolean>;
-  completeOrder: (orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => void;
   pendingOrdersCount: number;
 
   // Day session
@@ -487,6 +487,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [orders]);
 
+  /** Replace an order with whatever the database actually holds. */
+  const resyncOrder = useCallback(async (orderId: string) => {
+    try {
+      const fresh = await fetchOrderById(orderId);
+      if (fresh) setOrders(prev => prev.map(o => o.id === orderId ? fresh : o));
+    } catch (err) {
+      console.error('resyncOrder error:', err);
+    }
+  }, []);
+
+  /**
+   * After taking lines off an order, whatever is left may already be paid for.
+   * A zero charge asks the database to re-check and close the order if so —
+   * otherwise it would sit in the kitchen forever with nothing left to cobrar.
+   */
+  const settleIfFullyPaid = useCallback(async (orderId: string, items: OrderItem[], paidMoney: number) => {
+    const allPaid = items.length > 0 && items.every(i => (i.paidQuantity ?? 0) >= i.quantity);
+    if (!allPaid || paidMoney <= 0) return;
+    try {
+      await chargeOrderItemsDb(orderId, [], { cashApplied: 0, terminalApplied: 0 });
+      await resyncOrder(orderId);
+    } catch (err) {
+      console.error('settleIfFullyPaid error:', err);
+    }
+  }, [resyncOrder]);
+
   const decreaseOrderItemQuantityFn = useCallback(async (orderId: string, itemId: string, by: number = 1) => {
     const target = orders.find(o => o.id === orderId);
     if (!target) return false;
@@ -496,6 +522,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!item) return false;
 
     const newQty = item.quantity - by;
+    const alreadyPaid = item.paidQuantity ?? 0;
+
+    // Units that were already charged can't be taken off the order: the money
+    // is in the drawer, and dropping below paid_quantity used to make the order
+    // count as fully settled on its own, without anybody paying the rest.
+    if (newQty < alreadyPaid) return false;
 
     if (newQty <= 0) {
       setOrders(prev => prev.map(o =>
@@ -507,6 +539,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await deleteOrderItemDb(itemId);
       } catch (err) {
         console.error('decreaseOrderItemQuantity (delete) error:', err);
+        await resyncOrder(orderId);
+        return false;
       }
     } else {
       setOrders(prev => prev.map(o =>
@@ -518,16 +552,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await updateOrderItemQuantityDb(itemId, newQty);
       } catch (err) {
         console.error('decreaseOrderItemQuantity error:', err);
+        await resyncOrder(orderId);
+        return false;
       }
     }
 
+    const remainingItems = newQty <= 0
+      ? target.items.filter(i => i.id !== itemId)
+      : target.items.map(i => i.id === itemId ? { ...i, quantity: newQty } : i);
+    await settleIfFullyPaid(orderId, remainingItems, orderPaid(target));
+
     return true;
-  }, [orders]);
+  }, [orders, settleIfFullyPaid, resyncOrder]);
 
   const removeOrderItemFn = useCallback(async (orderId: string, itemId: string) => {
     const target = orders.find(o => o.id === orderId);
     if (!target) return false;
     if (target.status !== 'preparing' && target.status !== 'pending' && target.status !== 'ready') return false;
+
+    const item = target.items.find(i => i.id === itemId);
+    if (!item) return false;
+    // Same rule as above: a line with paid units stays on the bill.
+    if ((item.paidQuantity ?? 0) > 0) return false;
 
     setOrders(prev => prev.map(o =>
       o.id === orderId
@@ -539,10 +585,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await deleteOrderItemDb(itemId);
     } catch (err) {
       console.error('removeOrderItem error:', err);
+      await resyncOrder(orderId);
+      return false;
     }
 
+    await settleIfFullyPaid(orderId, target.items.filter(i => i.id !== itemId), orderPaid(target));
+
     return true;
-  }, [orders]);
+  }, [orders, settleIfFullyPaid, resyncOrder]);
 
   const chargeOrderItemsFn = useCallback(async (
     orderId: string,
@@ -553,96 +603,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!target) return false;
     if (target.status === 'completed') return false;
 
-    // Apply the selected quantities on top of what's already paid.
-    const updatedItems = target.items.map(item => {
-      const sel = selections.find(s => s.itemId === item.id);
-      if (!sel || sel.quantity <= 0) return item;
-      const alreadyPaid = item.paidQuantity ?? 0;
-      const newPaid = Math.min(item.quantity, alreadyPaid + sel.quantity);
-      return { ...item, paidQuantity: newPaid };
-    });
-
-    const changedItems = updatedItems
-      .filter((item, idx) => (item.paidQuantity ?? 0) !== (target.items[idx].paidQuantity ?? 0))
-      .map(item => ({ id: item.id, paidQuantity: item.paidQuantity ?? 0 }));
-
-    if (changedItems.length === 0 && payment.cashApplied === 0 && payment.terminalApplied === 0) {
+    const cleaned = selections.filter(s => s.quantity > 0);
+    if (cleaned.length === 0 && payment.cashApplied === 0 && payment.terminalApplied === 0) {
       return false;
     }
 
-    const newPaidCash = (target.paidCash ?? 0) + payment.cashApplied;
-    const newPaidTerminal = (target.paidTerminal ?? 0) + payment.terminalApplied;
-
-    // Fully paid when every unit of every line has been covered.
-    const fullyPaid = updatedItems.every(i => (i.paidQuantity ?? 0) >= i.quantity);
-    const completedAt = fullyPaid ? new Date().toISOString() : undefined;
-    const paymentMethod: Order['paymentMethod'] | undefined = fullyPaid
-      ? (newPaidCash > 0 && newPaidTerminal > 0
-          ? 'mixed'
-          : newPaidTerminal > 0
-            ? 'terminal'
-            : 'cash')
-      : undefined;
-
-    // Money is persisted BEFORE the local state changes: an optimistic update
-    // here would show "cuenta saldada" for a charge the database rejected, and
-    // the order would silently come back unpaid on the next reload.
+    // The whole charge — paid units, cash, card and closing the order — is one
+    // transaction on the database. Nothing is applied locally until it lands,
+    // so the screen can never show a charge the database refused.
     try {
-      await updateOrderPaymentDb(orderId, {
-        paidCash: newPaidCash,
-        paidTerminal: newPaidTerminal,
-        status: fullyPaid ? 'completed' : undefined,
-        paymentMethod,
-        completedAt,
-      });
+      await chargeOrderItemsDb(orderId, cleaned, payment);
     } catch (err) {
-      console.error('chargeOrderItems (payment) error:', err);
+      console.error('chargeOrderItems error:', err);
       return false;
     }
 
-    // The payment landed. If the per-item breakdown fails we cannot show the
-    // charge as clean either, so pull the order back from the database and let
-    // the caller report the failure.
-    if (changedItems.length > 0) {
-      try {
-        await updateOrderItemsPaidQuantityDb(changedItems);
-      } catch (err) {
-        console.error('chargeOrderItems (items) error:', err);
-        try {
-          const fresh = await fetchOrderById(orderId);
-          if (fresh) setOrders(prev => prev.map(o => o.id === orderId ? fresh : o));
-        } catch (refetchErr) {
-          console.error('chargeOrderItems (refetch) error:', refetchErr);
-        }
-        return false;
-      }
-    }
-
-    setOrders(prev => prev.map(o => o.id === orderId
-      ? {
-          ...o,
-          items: updatedItems,
-          paidCash: newPaidCash,
-          paidTerminal: newPaidTerminal,
-          ...(fullyPaid
-            ? { status: 'completed' as const, paymentMethod, completedAt }
-            : {}),
-        }
-      : o
-    ));
+    // Read back what was actually stored: the amounts were added server-side,
+    // so this is the only source of truth after a concurrent charge.
+    await resyncOrder(orderId);
 
     return true;
-  }, [orders]);
-
-  const completeOrderFn = useCallback((orderId: string, paymentMethod: 'cash' | 'terminal', amountPaid?: number, change?: number) => {
-    setOrders(prev => prev.map(o =>
-      o.id === orderId
-        ? { ...o, status: 'completed' as const, paymentMethod, amountPaid, change, completedAt: new Date().toISOString() }
-        : o
-    ));
-    completeOrderDb(orderId, paymentMethod, amountPaid, change)
-      .catch(err => console.error('completeOrder error:', err));
-  }, []);
+  }, [orders, resyncOrder]);
 
   const pendingOrdersCount = orders.filter(o => o.status === 'preparing').length;
 
@@ -673,37 +654,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const closeDay = useCallback(async () => {
     if (!activeSession) return null;
 
-    // Calculate totals from completed orders of this session
-    const sessionOrders = orders.filter(o => o.daySessionId === activeSession.id && o.status === 'completed');
-    const orderTotal = (o: Order) => o.items.reduce((s, i) => s + i.productPrice * i.quantity, 0);
-    const totalSales = sessionOrders.reduce((sum, o) => sum + orderTotal(o), 0);
-    // Prefer the per-method amounts recorded by split/mixed payments; fall back
-    // to the legacy single paymentMethod for orders closed before this feature.
-    const totalCash = sessionOrders.reduce((sum, o) => {
-      if (o.paidCash != null || o.paidTerminal != null) return sum + (o.paidCash ?? 0);
-      return sum + (o.paymentMethod === 'cash' ? orderTotal(o) : 0);
-    }, 0);
-    const totalTerminal = sessionOrders.reduce((sum, o) => {
-      if (o.paidCash != null || o.paidTerminal != null) return sum + (o.paidTerminal ?? 0);
-      return sum + (o.paymentMethod === 'terminal' ? orderTotal(o) : 0);
-    }, 0);
-    const totalExp = expenses.reduce((sum, e) => sum + e.amount, 0);
-    // Efectivo esperado = inicial + venta total - terminal - gastos
-    const finalCash = activeSession.initialCash + totalSales - totalTerminal - totalExp;
+    // Every order of the session counts, not just the closed ones: a bill that
+    // was half paid still put money in the drawer, and all of them are deleted
+    // below. See lib/reporting.ts for how partial charges are counted.
+    const sessionOrders = orders.filter(o => o.daySessionId === activeSession.id);
+    const totals = computeSessionTotals(sessionOrders, expenses, activeSession.initialCash);
+    const { totalSales, totalCash, totalTerminal, totalExpenses: totalExp, finalCash } = totals;
 
-    const totals = { totalSales, totalCash, totalTerminal, totalExpenses: totalExp, finalCash };
-
-    // Build product breakdown snapshot
-    const productMap: Record<string, ProductSale> = {};
-    for (const order of sessionOrders) {
-      for (const item of order.items) {
-        const key = item.productName;
-        if (!productMap[key]) productMap[key] = { name: key, qty: 0, total: 0 };
-        productMap[key].qty += item.quantity;
-        productMap[key].total += item.productPrice * item.quantity;
-      }
-    }
-    const products: ProductSale[] = Object.values(productMap).sort((a, b) => b.total - a.total);
+    const products: ProductSale[] = computeProductSales(sessionOrders);
+    const ordersCount = sessionOrders.filter(o => orderPaid(o) > 0).length;
 
     const expensesList: ExpenseEntry[] = expenses.map(e => ({ description: e.description, amount: e.amount }));
 
@@ -717,7 +676,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       totalTerminal,
       totalExpenses: totalExp,
       finalCash,
-      ordersCount: sessionOrders.length,
+      ordersCount,
       products,
       expensesList,
     };
@@ -730,6 +689,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setExpenses([]);
     } catch (err) {
       console.error('closeDay error:', err);
+      // The day is still open: don't hand back a corte that was never saved.
+      return null;
     }
 
     return totals;
@@ -771,7 +732,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         decreaseOrderItemQuantity: decreaseOrderItemQuantityFn,
         removeOrderItem: removeOrderItemFn,
         chargeOrderItems: chargeOrderItemsFn,
-        completeOrder: completeOrderFn, pendingOrdersCount,
+        pendingOrdersCount,
         activeSession, isDayOpen, openDay, closeDay,
         expenses, addExpense: addExpenseFn, removeExpense: removeExpenseFn,
         loaded,
