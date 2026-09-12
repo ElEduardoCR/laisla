@@ -35,6 +35,7 @@ function mapProductRow(row: Record<string, unknown>): Product {
 function mapOrderRow(row: Record<string, unknown>, items: OrderItem[]): Order {
   return {
     id: row.id as string,
+    orderNumber: row.order_number != null ? Number(row.order_number) : undefined,
     customerName: row.customer_name as string,
     takeout: row.takeout as boolean,
     status: row.status as Order['status'],
@@ -60,6 +61,7 @@ function mapOrderItemRow(row: Record<string, unknown>): OrderItem {
     quantity: Number(row.quantity),
     notes: (row.notes as string) || undefined,
     paidQuantity: row.paid_quantity != null ? Number(row.paid_quantity) : 0,
+    addedBatch: row.added_batch != null ? Number(row.added_batch) : 0,
   };
 }
 
@@ -205,11 +207,18 @@ export async function fetchOrderItems(orderId: string): Promise<OrderItem[]> {
   return (data || []).map(mapOrderItemRow);
 }
 
+/**
+ * Insert an order and its items. Returns the per-day number the database
+ * assigned to it (see the trigger in lib/migrate-v6.sql), or undefined if the
+ * database didn't hand one back.
+ */
 export async function insertOrder(
   order: Omit<Order, 'items'>,
   items: OrderItem[]
-): Promise<void> {
-  const { error: oErr } = await supabase
+): Promise<number | undefined> {
+  // `.select()` (all columns, not a named one) so an older database without
+  // order_number still inserts fine instead of failing the whole request.
+  const { data, error: oErr } = await supabase
     .from('orders')
     .insert({
       id: order.id,
@@ -218,7 +227,9 @@ export async function insertOrder(
       status: order.status,
       created_at: order.createdAt,
       day_session_id: order.daySessionId || null,
-    });
+    })
+    .select()
+    .maybeSingle();
   if (oErr) throw oErr;
 
   if (items.length > 0) {
@@ -237,6 +248,9 @@ export async function insertOrder(
       );
     if (iErr) throw iErr;
   }
+
+  const assigned = (data as Record<string, unknown> | null)?.order_number;
+  return assigned != null ? Number(assigned) : undefined;
 }
 
 export async function updateOrderItemQuantityDb(itemId: string, quantity: number): Promise<void> {
@@ -268,6 +282,7 @@ export async function appendOrderItemsDb(items: OrderItem[]): Promise<void> {
         product_price: item.productPrice,
         quantity: item.quantity,
         notes: item.notes || null,
+        added_batch: item.addedBatch ?? 1,
       }))
     );
   if (error) throw error;

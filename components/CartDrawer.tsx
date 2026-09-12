@@ -16,6 +16,7 @@ export default function CartDrawer({ open, onClose }: Props) {
   } = useApp();
   const [nameError, setNameError] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [placedNumber, setPlacedNumber] = useState<number | undefined>(undefined);
 
   const handlePlaceOrder = async () => {
     if (!customerName.trim()) {
@@ -23,11 +24,13 @@ export default function CartDrawer({ open, onClose }: Props) {
       return;
     }
     setNameError(false);
-    const ok = await placeOrder();
+    const { ok, orderNumber } = await placeOrder();
     if (ok) {
+      setPlacedNumber(orderNumber);
       setSuccess(true);
       setTimeout(() => {
         setSuccess(false);
+        setPlacedNumber(undefined);
         onClose();
       }, 1500);
     }
@@ -67,6 +70,14 @@ export default function CartDrawer({ open, onClose }: Props) {
             <div className="text-center">
               <div className="text-6xl mb-4">✅</div>
               <p className="text-xl font-bold text-success">¡Pedido enviado a cocina!</p>
+              {placedNumber != null && (
+                <p className="mt-3 text-sm text-gray-500 font-medium">
+                  Pedido{' '}
+                  <span className="text-4xl font-black text-primary align-middle tabular-nums">
+                    #{placedNumber}
+                  </span>
+                </p>
+              )}
             </div>
           </div>
         ) : cart.length === 0 ? (

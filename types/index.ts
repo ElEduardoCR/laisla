@@ -30,10 +30,18 @@ export interface OrderItem {
   notes?: string;
   /** Units of this line that have already been paid (for split bills). Defaults to 0. */
   paidQuantity?: number;
+  /**
+   * 0 for the products the order was created with, 1, 2, … for each round of
+   * products added afterwards. Anything above 0 is shown as "+2" instead of
+   * "x2" so the kitchen can see what is new.
+   */
+  addedBatch?: number;
 }
 
 export interface Order {
   id: string;
+  /** Sequential number within the day, assigned by the database. */
+  orderNumber?: number;
   customerName: string;
   items: OrderItem[];
   takeout: boolean;

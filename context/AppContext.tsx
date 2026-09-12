@@ -43,7 +43,7 @@ interface AppContextType {
 
   // Orders
   orders: Order[];
-  placeOrder: () => Promise<boolean>;
+  placeOrder: () => Promise<{ ok: boolean; orderNumber?: number }>;
   updateOrderStatus: (orderId: string, status: Order['status']) => void;
   appendItemsToOrder: (orderId: string, items: CartItem[]) => Promise<boolean>;
   decreaseOrderItemQuantity: (orderId: string, itemId: string, by?: number) => Promise<boolean>;
@@ -163,6 +163,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (prev.some(o => o.id === row.id)) return prev;
           return [...prev, {
             id: row.id, customerName: row.customer_name, takeout: row.takeout,
+            orderNumber: row.order_number != null ? Number(row.order_number) : undefined,
             status: row.status, createdAt: row.created_at, items: [],
             paymentMethod: row.payment_method || undefined,
             amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
@@ -179,6 +180,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const row = payload.new;
         setOrders(prev => prev.map(o => o.id === row.id ? {
           ...o,
+          orderNumber: row.order_number != null ? Number(row.order_number) : o.orderNumber,
           status: row.status,
           paymentMethod: row.payment_method || undefined,
           amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
@@ -197,6 +199,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           productName: row.product_name, productPrice: Number(row.product_price),
           quantity: Number(row.quantity), notes: row.notes || undefined,
           paidQuantity: row.paid_quantity != null ? Number(row.paid_quantity) : 0,
+          addedBatch: row.added_batch != null ? Number(row.added_batch) : 0,
         };
         setOrders(prev => prev.map(o => {
           if (o.id !== item.orderId) return o;
@@ -215,6 +218,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   quantity: Number(row.quantity),
                   notes: row.notes || undefined,
                   paidQuantity: row.paid_quantity != null ? Number(row.paid_quantity) : i.paidQuantity ?? 0,
+                  addedBatch: row.added_batch != null ? Number(row.added_batch) : i.addedBatch ?? 0,
                 }
               : i
           ),
@@ -373,7 +377,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // ══════════════════════════════════════════════
 
   const placeOrder = useCallback(async () => {
-    if (!customerName.trim() || cart.length === 0) return false;
+    if (!customerName.trim() || cart.length === 0) return { ok: false };
 
     const orderId = generateId();
     const now = new Date().toISOString();
@@ -406,16 +410,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setCustomerName('');
     setTakeout(false);
 
+    let orderNumber: number | undefined;
     try {
-      await insertOrder(
+      // The number is assigned by the database so every device agrees on it.
+      const assigned = await insertOrder(
         { id: orderId, customerName: newOrder.customerName, takeout, status: 'preparing', createdAt: now, daySessionId: activeSession?.id },
         orderItems
       );
+      if (assigned != null) {
+        orderNumber = assigned;
+        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, orderNumber: assigned } : o));
+      }
     } catch (err) {
       console.error('placeOrder error:', err);
     }
 
-    return true;
+    return { ok: true, orderNumber };
   }, [customerName, cart, takeout, activeSession]);
 
   const updateOrderStatusFn = useCallback((orderId: string, status: Order['status']) => {
@@ -429,6 +439,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!target) return false;
     if (target.status !== 'preparing' && target.status !== 'pending' && target.status !== 'ready') return false;
 
+    // Each round of additions gets its own batch number, so the kitchen sees
+    // "+2" on what was just added instead of it blending into the original
+    // "x2" lines.
+    const addedBatch = target.items.reduce((max, i) => Math.max(max, i.addedBatch ?? 0), 0) + 1;
+
     const newItems: OrderItem[] = items.map((item, i) => ({
       id: generateId() + i,
       orderId,
@@ -437,6 +452,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       productPrice: item.product.price,
       quantity: item.quantity,
       notes: item.notes || undefined,
+      addedBatch,
     }));
 
     newItems.forEach(item => localIds.current.add(item.id));

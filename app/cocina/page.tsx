@@ -48,8 +48,13 @@ function OrderCard({
   const paid = orderPaid(order);
   const remaining = Math.max(0, total - paid);
 
-  // Group items by category
-  const groupedItems = order.items.reduce((acc, item) => {
+  // Group items by category, with anything added later at the end of its group
+  // so the new products read as a block instead of being scattered around.
+  const sortedItems = [...order.items].sort(
+    (a, b) => (a.addedBatch ?? 0) - (b.addedBatch ?? 0)
+  );
+
+  const groupedItems = sortedItems.reduce((acc, item) => {
     const product = products.find(p => p.id === item.productId);
     const category = categories.find(c => c.id === product?.categoryId);
     const catName = category?.name || 'Otros';
@@ -62,12 +67,19 @@ function OrderCard({
   return (
     <div className={`rounded-xl border-2 p-4 shadow-sm ${statusStyles[order.status]}`}>
       {/* Header */}
-      <div className="flex items-start justify-between mb-3">
-        <div>
-          <h3 className="font-bold text-lg text-foreground">{order.customerName}</h3>
-          <p className="text-xs text-gray-500">{formatTime(order.createdAt)}</p>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <div className="flex items-start gap-2.5 min-w-0">
+          {order.orderNumber != null && (
+            <span className="text-3xl font-black text-primary leading-none tabular-nums shrink-0">
+              <span className="text-lg align-top">#</span>{order.orderNumber}
+            </span>
+          )}
+          <div className="min-w-0">
+            <h3 className="font-bold text-lg text-foreground truncate">{order.customerName}</h3>
+            <p className="text-xs text-gray-500">{formatTime(order.createdAt)}</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {order.takeout && (
             <span className="bg-accent/20 text-accent-dark text-xs font-bold px-2.5 py-1 rounded-full">
               📦 Para llevar
@@ -97,12 +109,30 @@ function OrderCard({
               {catName}
             </h4>
             <div className="space-y-2">
-              {items.map((item, i) => (
-                <div key={i} className="flex justify-between text-sm">
+              {items.map((item, i) => {
+                // Added after the order was placed: the kitchen still has to
+                // cook it, so it shows as "+2" and stays highlighted until the
+                // order is charged.
+                const isAddition = (item.addedBatch ?? 0) > 0;
+                const highlight = isAddition && order.status !== 'completed';
+                return (
+                <div
+                  key={i}
+                  className={`flex justify-between text-sm ${
+                    highlight ? 'bg-accent/10 border-l-4 border-accent rounded-r pl-2 py-1 -ml-1' : ''
+                  }`}
+                >
                   <div className="flex-1 pr-2">
                     <span className="text-gray-700">
-                      <span className="font-semibold text-foreground">{item.quantity}x</span>{' '}
+                      <span className={highlight ? 'font-black text-accent-dark' : 'font-semibold text-foreground'}>
+                        {isAddition ? `+${item.quantity}` : `${item.quantity}x`}
+                      </span>{' '}
                       {item.productName}
+                      {highlight && (
+                        <span className="ml-1.5 bg-accent text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide">
+                          nuevo
+                        </span>
+                      )}
                     </span>
                     {item.notes && (
                       <div className="text-xs text-red-500 font-bold mt-0.5 leading-tight">
@@ -114,7 +144,8 @@ function OrderCard({
                     ${(item.productPrice * item.quantity).toFixed(2)}
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))}

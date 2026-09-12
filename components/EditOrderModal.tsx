@@ -113,7 +113,12 @@ export default function EditOrderModal({ order, onClose }: Props) {
           <div className="bg-primary text-white p-4 flex items-center justify-between shrink-0">
             <div>
               <h2 className="text-lg font-bold">✏️ Agregar productos</h2>
-              <p className="text-sm text-white/80">{order.customerName}</p>
+              <p className="text-sm text-white/80">
+                {order.orderNumber != null && (
+                  <span className="font-bold">#{order.orderNumber} · </span>
+                )}
+                {order.customerName}
+              </p>
             </div>
             <button
               onClick={onClose}
@@ -179,6 +184,7 @@ export default function EditOrderModal({ order, onClose }: Props) {
                     <div className="space-y-2">
                       {order.items.map(item => {
                         const paidUnits = item.paidQuantity ?? 0;
+                        const isAddition = (item.addedBatch ?? 0) > 0;
                         // Charged units stay on the bill: the money is already
                         // in the drawer for them.
                         const canDecrease = item.quantity - 1 >= paidUnits;
@@ -190,7 +196,15 @@ export default function EditOrderModal({ order, onClose }: Props) {
                         >
                           <div className="flex-1 min-w-0">
                             <p className="font-semibold text-sm text-foreground truncate">
+                              {isAddition && (
+                                <span className="text-accent-dark font-black">+{item.quantity} </span>
+                              )}
                               {item.productName}
+                              {isAddition && (
+                                <span className="ml-1.5 bg-accent text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide">
+                                  nuevo
+                                </span>
+                              )}
                             </p>
                             <p className="text-gray-500 text-xs">
                               ${item.productPrice.toFixed(2)} c/u · subtotal $

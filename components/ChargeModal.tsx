@@ -150,7 +150,12 @@ export default function ChargeModal({ order, onClose }: Props) {
           <div className="bg-primary text-white p-4 flex items-center justify-between shrink-0">
             <div>
               <h2 className="text-lg font-bold">💰 Cobrar</h2>
-              <p className="text-sm text-white/80">{order.customerName}</p>
+              <p className="text-sm text-white/80">
+                {order.orderNumber != null && (
+                  <span className="font-bold">#{order.orderNumber} · </span>
+                )}
+                {order.customerName}
+              </p>
             </div>
             <button onClick={onClose} className="text-white/80 hover:text-white text-2xl leading-none">
               ✕
