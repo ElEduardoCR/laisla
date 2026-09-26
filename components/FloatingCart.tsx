@@ -14,6 +14,7 @@ export default function FloatingCart({ onOpen }: Props) {
   return (
     <button
       onClick={onOpen}
+      aria-label="Ver pedido"
       className="fixed bottom-6 right-6 z-30 bg-accent hover:bg-accent-dark text-white rounded-full shadow-xl flex items-center gap-3 px-5 py-3.5 transition-all hover:scale-105 active:scale-95"
     >
       <span className="text-xl">🛒</span>

@@ -8,7 +8,7 @@ import FloatingCart from '@/components/FloatingCart';
 import CartDrawer from '@/components/CartDrawer';
 
 export default function HomePage() {
-  const { categories, products, isDayOpen } = useApp();
+  const { categories, products, isDayOpen, loaded } = useApp();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
 
@@ -18,6 +18,8 @@ export default function HomePage() {
 
   const availableProducts = filteredProducts.filter(p => p.available);
   const unavailableProducts = filteredProducts.filter(p => !p.available);
+
+  if (!loaded) return <p className="p-8 text-center">Cargando pedidos y jornada…</p>;
 
   if (!isDayOpen) {
     return (

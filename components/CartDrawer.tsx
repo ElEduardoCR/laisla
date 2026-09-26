@@ -12,29 +12,30 @@ export default function CartDrawer({ open, onClose }: Props) {
   const {
     cart, cartTotal, customerName, setCustomerName,
     takeout, setTakeout, updateCartQuantity, updateCartItemNotes, removeFromCart,
-    clearCart, placeOrder,
+    clearCart, placeOrder, pendingSubmissions, submissionReceipts,
   } = useApp();
   const [nameError, setNameError] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [placedNumber, setPlacedNumber] = useState<number | undefined>(undefined);
+  const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const receipt = submissionReceipts.find(entry => entry.id === savedId);
+  const pending = pendingSubmissions.find(entry => entry.id === savedId);
 
   const handlePlaceOrder = async () => {
-    if (!customerName.trim()) {
-      setNameError(true);
-      return;
-    }
+    if (saving) return;
+    if (!customerName.trim()) { setNameError(true); return; }
     setNameError(false);
-    const { ok, orderNumber } = await placeOrder();
-    if (ok) {
-      setPlacedNumber(orderNumber);
-      setSuccess(true);
-      setTimeout(() => {
-        setSuccess(false);
-        setPlacedNumber(undefined);
-        onClose();
-      }, 1500);
-    }
+    setSendError(null);
+    setSaving(true);
+    try {
+      const result = await placeOrder();
+      if (result.ok && result.queuedId) setSavedId(result.queuedId);
+      else setSendError(result.error || 'No se pudo guardar el pedido.');
+    } catch {
+      setSendError('No se pudo guardar el pedido. Revisa los pendientes antes de repetirlo.');
+    } finally { setSaving(false); }
   };
+  const close = () => { if (!saving) { setSavedId(null); setSendError(null); onClose(); } };
 
   return (
     <>
@@ -42,12 +43,13 @@ export default function CartDrawer({ open, onClose }: Props) {
       {open && (
         <div
           className="fixed inset-0 bg-black/40 z-40 transition-opacity"
-          onClick={onClose}
+          onClick={close}
         />
       )}
 
       {/* Drawer */}
       <div
+        inert={saving}
         className={`fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-2xl z-50 transform transition-transform duration-300 flex flex-col ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
@@ -58,26 +60,24 @@ export default function CartDrawer({ open, onClose }: Props) {
             🛒 Pedido
           </h2>
           <button
-            onClick={onClose}
+            onClick={close}
             className="text-white/80 hover:text-white text-2xl leading-none"
           >
             ✕
           </button>
         </div>
 
-        {success ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <div className="text-6xl mb-4">✅</div>
-              <p className="text-xl font-bold text-success">¡Pedido enviado a cocina!</p>
-              {placedNumber != null && (
-                <p className="mt-3 text-sm text-gray-500 font-medium">
-                  Pedido{' '}
-                  <span className="text-4xl font-black text-primary align-middle tabular-nums">
-                    #{placedNumber}
-                  </span>
-                </p>
+        {savedId ? (
+          <div className="flex-1 flex items-center justify-center p-6" aria-live="polite">
+            <div className="text-center space-y-4">
+              <div className="text-5xl">{receipt ? '✅' : pending?.state === 'blocked' ? '⚠️' : '⏳'}</div>
+              <p className="text-xl font-bold">{receipt ? 'Pedido confirmado por el servidor' : pending?.state === 'blocked' ? 'Pedido pendiente de revisión' : 'Pedido guardado en este dispositivo'}</p>
+              {receipt ? (
+                <p className="text-4xl font-black text-primary">#{receipt.orderNumber}</p>
+              ) : (
+                <p className="text-sm text-gray-600">{pending?.error || 'Está pendiente de envío. Se enviará automáticamente al tener conexión. No vuelvas a capturarlo.'}</p>
               )}
+              <button onClick={close} className="w-full bg-primary text-white font-bold py-3 rounded-lg">Continuar</button>
             </div>
           </div>
         ) : cart.length === 0 ? (
@@ -187,6 +187,7 @@ export default function CartDrawer({ open, onClose }: Props) {
                 ))}
               </div>
 
+              {sendError && <p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{sendError}</p>}
               {/* Total + Buttons (flow with content, not fixed) */}
               <div className="border-t mt-4 pt-4 space-y-3">
                 <div className="flex justify-between items-center">
@@ -195,9 +196,10 @@ export default function CartDrawer({ open, onClose }: Props) {
                 </div>
                 <button
                   onClick={handlePlaceOrder}
+                  disabled={saving}
                   className="w-full bg-success hover:bg-success-dark text-white font-bold py-3 rounded-lg transition-colors text-sm"
                 >
-                  ✅ Confirmar Pedido
+                  {saving ? 'Guardando pedido…' : '✅ Confirmar Pedido'}
                 </button>
                 <button
                   onClick={clearCart}

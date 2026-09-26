@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppProvider } from "@/context/AppContext";
+import SyncStatus from '@/components/SyncStatus';
 import Navbar from "@/components/Navbar";
 
 const geistSans = Geist({
@@ -15,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "POS Mariscos",
+  title: "LA ISLA",
   description: "Punto de venta para negocio de mariscos",
 };
 
@@ -32,6 +33,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-background">
         <AppProvider>
           <Navbar />
+          <SyncStatus />
           <main className="flex-1">{children}</main>
         </AppProvider>
       </body>

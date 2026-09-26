@@ -160,29 +160,13 @@ export async function deleteProductDb(id: string): Promise<void> {
 // ══════════════════════════════════════════════
 
 export async function fetchOrders(): Promise<Order[]> {
-  const { data: orderRows, error: oErr } = await supabase
+  // One database snapshot for headers and products; no two-request race.
+  const { data, error } = await supabase
     .from('orders')
-    .select('*')
+    .select('*, order_items(*)')
     .order('created_at', { ascending: true });
-  if (oErr) throw oErr;
-
-  const { data: itemRows, error: iErr } = await supabase
-    .from('order_items')
-    .select('*');
-  if (iErr) throw iErr;
-
-  // Group items by order_id
-  const itemsByOrder = new Map<string, OrderItem[]>();
-  for (const row of itemRows || []) {
-    const item = mapOrderItemRow(row);
-    const list = itemsByOrder.get(item.orderId) || [];
-    list.push(item);
-    itemsByOrder.set(item.orderId, list);
-  }
-
-  return (orderRows || []).map(row =>
-    mapOrderRow(row, itemsByOrder.get(row.id as string) || [])
-  );
+  if (error) throw error;
+  return (data || []).map(row => mapOrderRow(row, (row.order_items || []).map(mapOrderItemRow)));
 }
 
 /** Re-read a single order (with its items) straight from the database. */
@@ -207,50 +191,13 @@ export async function fetchOrderItems(orderId: string): Promise<OrderItem[]> {
   return (data || []).map(mapOrderItemRow);
 }
 
-/**
- * Insert an order and its items. Returns the per-day number the database
- * assigned to it (see the trigger in lib/migrate-v6.sql), or undefined if the
- * database didn't hand one back.
- */
-export async function insertOrder(
-  order: Omit<Order, 'items'>,
-  items: OrderItem[]
-): Promise<number | undefined> {
-  // `.select()` (all columns, not a named one) so an older database without
-  // order_number still inserts fine instead of failing the whole request.
-  const { data, error: oErr } = await supabase
-    .from('orders')
-    .insert({
-      id: order.id,
-      customer_name: order.customerName,
-      takeout: order.takeout,
-      status: order.status,
-      created_at: order.createdAt,
-      day_session_id: order.daySessionId || null,
-    })
-    .select()
-    .maybeSingle();
-  if (oErr) throw oErr;
-
-  if (items.length > 0) {
-    const { error: iErr } = await supabase
-      .from('order_items')
-      .insert(
-        items.map(item => ({
-          id: item.id,
-          order_id: item.orderId,
-          product_id: item.productId,
-          product_name: item.productName,
-          product_price: item.productPrice,
-          quantity: item.quantity,
-          notes: item.notes || null,
-        }))
-      );
-    if (iErr) throw iErr;
-  }
-
-  const assigned = (data as Record<string, unknown> | null)?.order_number;
-  return assigned != null ? Number(assigned) : undefined;
+/** Atomic and replay-safe, including after a lost response or day close. */
+export async function submitOrderOnce(order: Order): Promise<number> {
+  const { data, error } = await supabase.rpc('submit_order_once', { p_order: order });
+  if (error) throw error;
+  const number = Number(data?.order_number);
+  if (!Number.isInteger(number) || number <= 0) throw new Error('Missing server receipt');
+  return number;
 }
 
 export async function updateOrderItemQuantityDb(itemId: string, quantity: number): Promise<void> {

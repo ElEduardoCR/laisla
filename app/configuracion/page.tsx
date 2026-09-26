@@ -238,7 +238,7 @@ function MenuModule() {
 // ══════════════════════════════════════════════
 
 function DayModule() {
-  const { activeSession, isDayOpen, openDay, closeDay, orders, expenses, addExpense, removeExpense } = useApp();
+  const { activeSession, isDayOpen, openDay, closeDay, orders, expenses, addExpense, removeExpense, pendingSubmissions } = useApp();
   const [initialCash, setInitialCash] = useState('');
   const [expDesc, setExpDesc] = useState('');
   const [expAmount, setExpAmount] = useState('');
@@ -249,11 +249,18 @@ function DayModule() {
 
   const handleOpenDay = async () => {
     const cash = parseFloat(initialCash) || 0;
-    await openDay(cash);
-    setInitialCash('');
+    try {
+      await openDay(cash);
+      setInitialCash('');
+      setCloseError('');
+    } catch { setCloseError('No se pudo iniciar el día. Revisa la conexión.'); }
   };
 
   const handleCloseDay = async () => {
+    if (pendingSubmissions.some(entry => entry.order.daySessionId === activeSession?.id)) {
+      setCloseError('Hay pedidos guardados en este dispositivo sin confirmar. Resuélvelos antes de cerrar el día.');
+      return;
+    }
     // Closing deletes every order of the day, so anything still owing gets one
     // explicit confirmation first.
     if (pendingOrders.length > 0 && !confirmingClose) {
@@ -262,10 +269,12 @@ function DayModule() {
     }
     setClosing(true);
     setConfirmingClose(false);
-    const totals = await closeDay();
-    if (totals) setCloseSummary(totals);
-    else setCloseError('No se pudo cerrar el día. Revisa la conexión e inténtalo de nuevo.');
-    setClosing(false);
+    try {
+      const totals = await closeDay();
+      if (totals) setCloseSummary(totals);
+      else setCloseError('No se pudo cerrar el día. Revisa la conexión y los pedidos pendientes de envío.');
+    } catch { setCloseError('No se pudo verificar la cola de pedidos. No se cerró el día.'); }
+    finally { setClosing(false); }
   };
 
   const handleAddExpense = async () => {
@@ -334,6 +343,7 @@ function DayModule() {
         <button onClick={handleOpenDay} className="w-full bg-success hover:bg-success-dark text-white font-bold py-3 rounded-xl text-lg transition-colors">
           🌅 Iniciar Día
         </button>
+        {closeError && <p role="alert" className="mt-3 text-red-600">{closeError}</p>}
       </div>
     );
   }
